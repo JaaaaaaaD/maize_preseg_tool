@@ -122,7 +122,11 @@ class Toolbars:
         parent.btn_export_coco.clicked.connect(parent.export_coco_format)
         export_layout.addWidget(parent.btn_export_coco)
 
-        parent.btn_export_annotated = QPushButton("批量导出已标注")
+        parent.btn_export_yolo = QPushButton("导出项目YOLO数据集")
+        parent.btn_export_yolo.clicked.connect(parent.export_yolo_dataset)
+        export_layout.addWidget(parent.btn_export_yolo)
+
+        parent.btn_export_annotated = QPushButton("批量导出已完成")
         parent.btn_export_annotated.clicked.connect(parent.export_annotated_images)
         export_layout.addWidget(parent.btn_export_annotated)
 
@@ -139,7 +143,7 @@ class Toolbars:
         parent.btn_help.clicked.connect(parent.show_help)
         aux_layout.addWidget(parent.btn_help)
 
-        parent.btn_toggle_annotation = QPushButton("标记为已标注")
+        parent.btn_toggle_annotation = QPushButton("标记当前图片为已完成")
         parent.btn_toggle_annotation.clicked.connect(parent.toggle_annotation_status)
         aux_layout.addWidget(parent.btn_toggle_annotation)
 
