@@ -48,6 +48,7 @@ def _build_project_payload(
     image_state=None,
     project_id=None,
     class_names=None,
+    ignored_regions=None,
 ):
     """构造统一的保存 payload。"""
     class_names = list(class_names or DEFAULT_CLASS_NAMES)
@@ -67,6 +68,7 @@ def _build_project_payload(
         "current_plant_id": next_instance_id(normalized_plants, current_plant_id),
         "next_plant_group_id": next_plant_group_id(normalized_groups),
         "image_state": normalized_state,
+        "ignored_regions": ignored_regions or [],
         "annotation_hash": compute_annotation_hash(normalized_plants, normalized_groups, normalized_state),
         "save_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "version": VERSION,
@@ -82,6 +84,7 @@ def save_current_annotation(
     image_state=None,
     project_id=None,
     class_names=None,
+    ignored_regions=None,
 ):
     """保存当前标注。"""
     save_path = get_auto_save_path(image_path)
@@ -98,6 +101,7 @@ def save_current_annotation(
             image_state=image_state,
             project_id=project_id,
             class_names=class_names,
+            ignored_regions=ignored_regions,
         )
         with open(save_path, "w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
@@ -158,7 +162,7 @@ def load_current_annotation(image_path, class_names=None):
     return annotation
 
 
-def export_simple_json(image_path, plants, plant_groups=None, image_state=None, export_dir=None, class_names=None):
+def export_simple_json(image_path, plants, plant_groups=None, image_state=None, export_path=None, class_names=None, ignored_regions=None):
     """导出为扩展简单 JSON 格式。"""
     if not image_path:
         return None
@@ -171,10 +175,16 @@ def export_simple_json(image_path, plants, plant_groups=None, image_state=None, 
             plant_groups=plant_groups,
             image_state=image_state,
             class_names=class_names,
+            ignored_regions=ignored_regions,
         )
-        base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-        export_dir = export_dir or ANNOTATION_DIR
-        export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
+        
+        if not export_path:
+            base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
+            export_dir = ANNOTATION_DIR
+            export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
+        else:
+            export_dir = os.path.dirname(export_path)
+        
         os.makedirs(export_dir, exist_ok=True)
 
         with open(export_path, "w", encoding="utf-8") as file:
@@ -191,8 +201,9 @@ def export_coco_format(
     plants,
     image_width,
     image_height,
-    export_dir=None,
+    export_path=None,
     class_names=None,
+    ignored_regions=None,
 ):
     """导出为 COCO 格式。
 
@@ -235,6 +246,7 @@ def export_coco_format(
                 }
                 for class_id, class_name in enumerate(class_names)
             ],
+            "ignored_regions": [],
         }
 
         annotation_id = 1
@@ -279,9 +291,38 @@ def export_coco_format(
             )
             annotation_id += 1
 
-        base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-        export_dir = export_dir or ANNOTATION_DIR
-        export_path = os.path.join(export_dir, f"{base_name}_coco.json")
+        # 添加忽略区域
+        for region in ignored_regions or []:
+            segmentation = []
+            x_coords = []
+            y_coords = []
+            total_area = 0.0
+
+            if len(region) >= 3:
+                segmentation.append([coord for point in region for coord in (point[0], point[1])])
+                x_coords.extend([point[0] for point in region])
+                y_coords.extend([point[1] for point in region])
+                total_area += float(calculate_polygon_area(region))
+
+                if segmentation:
+                    x_min = min(x_coords)
+                    y_min = min(y_coords)
+                    width = max(x_coords) - x_min
+                    height = max(y_coords) - y_min
+
+                    coco_data["ignored_regions"].append({
+                        "segmentation": segmentation,
+                        "area": float(total_area),
+                        "bbox": [x_min, y_min, width, height]
+                    })
+
+        if not export_path:
+            base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
+            export_dir = ANNOTATION_DIR
+            export_path = os.path.join(export_dir, f"{base_name}_coco.json")
+        else:
+            export_dir = os.path.dirname(export_path)
+        
         os.makedirs(export_dir, exist_ok=True)
 
         with open(export_path, "w", encoding="utf-8") as file:

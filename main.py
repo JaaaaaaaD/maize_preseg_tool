@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from config import ANNOTATION_DIR, SAM_MODEL_PATH, SAM_MODEL_TYPE, SHORTCUTS
+from config import ANNOTATION_DIR, SHORTCUTS
 from components.help_dialog import HelpDialog
 from components.image_label import ImageLabel
 from components.toolbars import Toolbars
@@ -76,12 +76,13 @@ class MainWindow(QMainWindow):
         self.project_metadata = None
         self.project_paths = None
 
-        self.sam_model = None
-        self.sam_model_loaded = False
-        self.sam_model_path = SAM_MODEL_PATH
-        self.sam_model_type = SAM_MODEL_TYPE
-        self.sam_segmenting = False
+        # self.sam_model = None
+        # self.sam_model_loaded = False
+        # self.sam_model_path = SAM_MODEL_PATH
+        # self.sam_model_type = SAM_MODEL_TYPE
+        # self.sam_segmenting = False
         self.region_growing_enabled = False
+        self.ignoring_region = False
 
         self.inference_worker = None
         self.current_inference_request = None
@@ -199,8 +200,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(SHORTCUTS["LOAD_BATCH"]), self, self.load_batch_images)
         QShortcut(QKeySequence(SHORTCUTS["PREV_IMAGE"]), self, self.prev_image)
         QShortcut(QKeySequence(SHORTCUTS["NEXT_IMAGE"]), self, self.next_image)
-        QShortcut(QKeySequence(SHORTCUTS["TOGGLE_SAM_SEGMENTATION"]), self, self.toggle_sam_segmentation)
+        # QShortcut(QKeySequence(SHORTCUTS["TOGGLE_SAM_SEGMENTATION"]), self, self.toggle_sam_segmentation)
         QShortcut(QKeySequence(SHORTCUTS["TOGGLE_REGION_GROWING"]), self, self.toggle_region_growing)
+        QShortcut(QKeySequence(SHORTCUTS["TOGGLE_IGNORE_REGION"]), self, self.toggle_ignore_region)
 
     def bind_properties_panel(self):
         """连接右侧属性面板事件。"""
@@ -408,6 +410,7 @@ class MainWindow(QMainWindow):
             image_state=self.current_image_state,
             project_id=self.project_id,
             class_names=self.project_metadata.get("class_names") if self.project_metadata else None,
+            ignored_regions=self.left_label.ignored_regions,
         )
         if not success or not payload:
             return False
@@ -752,61 +755,61 @@ class MainWindow(QMainWindow):
                 button.style().polish(button)
             button.update()
 
-    def load_sam_model(self):
-        """加载 SAM 模型。"""
-        if SamModel is None:
-            QMessageBox.warning(self, "警告", "SAM 库未安装，请安装 segment-anything 包")
-            return
+    # def load_sam_model(self):
+    #     """加载 SAM 模型。"""
+    #     if SamModel is None:
+    #         QMessageBox.warning(self, "警告", "SAM 库未安装，请安装 segment-anything 包")
+    #         return
 
-        model_path, _ = QFileDialog.getOpenFileName(self, "选择 SAM 模型文件", ".", "PTH 文件 (*.pth)")
-        if not model_path:
-            return
+    #     model_path, _ = QFileDialog.getOpenFileName(self, "选择 SAM 模型文件", ".", "PTH 文件 (*.pth)")
+    #     if not model_path:
+    #         return
 
-        progress = QProgressDialog("正在加载 SAM 模型...", "取消", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setValue(0)
-        try:
-            self.sam_model = SamModel(model_type=self.sam_model_type)
-            progress.setValue(20)
-            success = self.sam_model.load_model(model_path)
-            if success:
-                progress.setValue(100)
-                self.sam_model_loaded = True
-                self.btn_sam_segment.setEnabled(True)
-                QMessageBox.information(self, "成功", f"SAM 模型加载成功，设备: {self.sam_model.get_device()}")
-            else:
-                QMessageBox.critical(self, "错误", "加载 SAM 模型失败")
-        except Exception as error:
-            QMessageBox.critical(self, "错误", f"加载 SAM 模型失败: {error}")
-        finally:
-            progress.close()
+    #     progress = QProgressDialog("正在加载 SAM 模型...", "取消", 0, 100, self)
+    #     progress.setWindowModality(Qt.WindowModal)
+    #     progress.setValue(0)
+    #     try:
+    #         self.sam_model = SamModel(model_type=self.sam_model_type)
+    #         progress.setValue(20)
+    #         success = self.sam_model.load_model(model_path)
+    #         if success:
+    #             progress.setValue(100)
+    #             self.sam_model_loaded = True
+    #             self.btn_sam_segment.setEnabled(True)
+    #             QMessageBox.information(self, "成功", f"SAM 模型加载成功，设备: {self.sam_model.get_device()}")
+    #         else:
+    #             QMessageBox.critical(self, "错误", "加载 SAM 模型失败")
+    #     except Exception as error:
+    #         QMessageBox.critical(self, "错误", f"加载 SAM 模型失败: {error}")
+    #     finally:
+    #         progress.close()
 
-    def toggle_sam_segmentation(self):
-        """切换 SAM 分割模式。"""
-        if not self.sam_model_loaded:
-            QMessageBox.warning(self, "警告", "请先加载 SAM 模型")
-            return
-        if not self.current_image:
-            QMessageBox.warning(self, "警告", "请先加载图片")
-            return
-        if self.region_growing_enabled:
-            self.toggle_region_growing()
+    # def toggle_sam_segmentation(self):
+    #     """切换 SAM 分割模式。"""
+    #     if not self.sam_model_loaded:
+    #         QMessageBox.warning(self, "警告", "请先加载 SAM 模型")
+    #         return
+    #     if not self.current_image:
+    #         QMessageBox.warning(self, "警告", "请先加载图片")
+    #         return
+    #     if self.region_growing_enabled:
+    #         self.toggle_region_growing()
 
-        self.sam_segmenting = not self.sam_segmenting
-        if self.sam_segmenting:
-            self.btn_sam_segment.setText(f"退出分割 ({SHORTCUTS['TOGGLE_SAM_SEGMENTATION']})")
-            self.left_label.sam_segmenting = True
-            self.left_label.sam_predictor = self.sam_model.predictor
-            self.left_label.sam_prompt_points = []
-            import numpy as np
+    #     self.sam_segmenting = not self.sam_segmenting
+    #     if self.sam_segmenting:
+    #         self.btn_sam_segment.setText(f"退出分割 ({SHORTCUTS['TOGGLE_SAM_SEGMENTATION']})")
+    #         self.left_label.sam_segmenting = True
+    #         self.left_label.sam_predictor = self.sam_model.predictor
+    #         self.left_label.sam_prompt_points = []
+    #         import numpy as np
 
-            self.sam_model.set_image(np.array(self.current_image.convert("RGB")))
-        else:
-            self.btn_sam_segment.setText(f"SAM 分割 ({SHORTCUTS['TOGGLE_SAM_SEGMENTATION']})")
-            self.left_label.sam_segmenting = False
-            self.left_label.sam_prompt_points = []
-        self.left_label.update_display()
-        self.update_status_bar()
+    #         self.sam_model.set_image(np.array(self.current_image.convert("RGB")))
+    #     else:
+    #         self.btn_sam_segment.setText(f"SAM 分割 ({SHORTCUTS['TOGGLE_SAM_SEGMENTATION']})")
+    #         self.left_label.sam_segmenting = False
+    #         self.left_label.sam_prompt_points = []
+    #     self.left_label.update_display()
+    #     self.update_status_bar()
 
     def toggle_region_growing(self):
         """切换区域生长模式。"""
@@ -820,10 +823,29 @@ class MainWindow(QMainWindow):
         if self.region_growing_enabled:
             self.btn_region_growing.setText(f"退出膨胀点选 ({SHORTCUTS['TOGGLE_REGION_GROWING']})")
             self.left_label.region_growing_enabled = True
+            self.left_label.ignoring_region = False
         else:
             self.btn_region_growing.setText(f"膨胀点选 ({SHORTCUTS['TOGGLE_REGION_GROWING']})")
             self.left_label.region_growing_enabled = False
             self.left_label.region_growing_mask = None
+        self.left_label.update_display()
+        self.update_status_bar()
+    
+    def toggle_ignore_region(self):
+        """切换忽略区域绘制模式。"""
+        if not self.current_image:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+
+        self.ignoring_region = not self.ignoring_region
+        if self.ignoring_region:
+            self.btn_ignore_region.setText(f"退出忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
+            self.left_label.ignoring_region = True
+            self.left_label.region_growing_enabled = False
+            self.left_label.current_ignored_points = []
+        else:
+            self.btn_ignore_region.setText(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
+            self.left_label.ignoring_region = False
         self.left_label.update_display()
         self.update_status_bar()
 
@@ -832,9 +854,14 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def save_current_polygon(self):
-        if self.left_label.save_current_polygon():
-            self.mark_annotation_changed()
-            self.update_status_bar()
+        if self.ignoring_region:
+            if self.left_label.save_current_ignored_region():
+                self.mark_annotation_changed()
+                self.update_status_bar()
+        else:
+            if self.left_label.save_current_polygon():
+                self.mark_annotation_changed()
+                self.update_status_bar()
 
     def save_plant(self):
         """兼容旧快捷键：保存当前手工实例。"""
@@ -993,36 +1020,76 @@ class MainWindow(QMainWindow):
         if not self.current_image_path:
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
-        export_path = export_simple_json_file(
+        
+        # 让用户选择导出路径
+        base_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
+        default_filename = f"{base_name}_annotation.json"
+        export_path, _ = QFileDialog.getSaveFileName(
+            self, "导出 JSON 文件", default_filename, "JSON 文件 (*.json)"
+        )
+        
+        if not export_path:
+            return  # 用户取消选择
+        
+        # 调用导出函数
+        export_result = export_simple_json_file(
             self.current_image_path,
             self.left_label.plants,
             plant_groups=self.left_label.plant_groups,
             image_state=self.current_image_state,
+            export_path=export_path,
             class_names=self.project_metadata.get("class_names") if self.project_metadata else None,
+            ignored_regions=self.left_label.ignored_regions,
         )
-        if export_path:
-            QMessageBox.information(self, "成功", f"JSON 导出成功：{export_path}")
+        
+        if export_result:
+            QMessageBox.information(self, "成功", f"JSON 导出成功：{export_result}")
 
     def export_coco_format(self):
         if not self.current_image_path or not self.current_image:
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
-        export_path = export_coco_file(
+        
+        # 让用户选择导出路径
+        base_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
+        default_filename = f"{base_name}_coco.json"
+        export_path, _ = QFileDialog.getSaveFileName(
+            self, "导出 COCO 文件", default_filename, "JSON 文件 (*.json)"
+        )
+        
+        if not export_path:
+            return  # 用户取消选择
+        
+        # 调用导出函数
+        export_result = export_coco_file(
             self.current_image_path,
             self.left_label.plants,
             self.current_image.width,
             self.current_image.height,
+            export_path=export_path,
             class_names=self.project_metadata.get("class_names") if self.project_metadata else None,
+            ignored_regions=self.left_label.ignored_regions,
         )
-        if export_path:
-            QMessageBox.information(self, "成功", f"COCO 导出成功：{export_path}")
+        
+        if export_result:
+            QMessageBox.information(self, "成功", f"COCO 导出成功：{export_result}")
 
     def export_yolo_dataset(self):
         if not self.project_id:
             QMessageBox.warning(self, "警告", "当前没有活动项目")
             return
+        
+        # 让用户选择导出目录
+        default_dir = os.path.join(ANNOTATION_DIR, f"yolo_dataset_{current_timestamp()}")
+        export_dir = QFileDialog.getExistingDirectory(
+            self, "选择 YOLO 数据集导出目录", default_dir
+        )
+        
+        if not export_dir:
+            return  # 用户取消选择
+        
         try:
-            dataset_info = build_project_dataset(self.project_id, rebuild_split=False)
+            dataset_info = build_project_dataset(self.project_id, rebuild_split=False, dataset_root=export_dir)
             QMessageBox.information(
                 self,
                 "成功",
@@ -1036,9 +1103,20 @@ class MainWindow(QMainWindow):
         if not self.project_id:
             QMessageBox.warning(self, "警告", "当前没有活动项目")
             return
-        export_dir, exported_count = export_completed_annotations(self.project_id)
-        if export_dir:
-            QMessageBox.information(self, "成功", f"已完成图片 JSON 导出 {exported_count} 份到：{export_dir}")
+        
+        # 让用户选择导出目录
+        default_dir = os.path.join(ANNOTATION_DIR, f"completed_export_{current_timestamp()}")
+        export_dir = QFileDialog.getExistingDirectory(
+            self, "选择导出目录", default_dir
+        )
+        
+        if not export_dir:
+            return  # 用户取消选择
+        
+        # 调用导出函数
+        export_result, exported_count = export_completed_annotations(self.project_id, export_dir=export_dir)
+        if export_result:
+            QMessageBox.information(self, "成功", f"已完成图片 JSON 导出 {exported_count} 份到：{export_result}")
         else:
             QMessageBox.warning(self, "警告", "当前项目没有已完成图片")
 
@@ -1101,10 +1179,12 @@ class MainWindow(QMainWindow):
         if self.annotation_changed:
             base_msg += " | 【有未保存的修改】"
 
-        if self.sam_segmenting:
-            base_msg += " | SAM 分割模式"
-        elif self.region_growing_enabled:
+        # if self.sam_segmenting:
+        #     base_msg += " | SAM 分割模式"
+        if self.region_growing_enabled:
             base_msg += " | 膨胀点选模式"
+        if self.ignoring_region:
+            base_msg += " | 忽略区域模式"
 
         base_msg += f" | 状态: {self.training_status_text}"
         self.statusBar().showMessage(base_msg)

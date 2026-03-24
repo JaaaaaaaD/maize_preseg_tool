@@ -80,14 +80,19 @@ class ImageLabel(QLabel):
         self.edge_map = None
         self.current_snap_point = None
 
-        self.sam_segmenting = False
-        self.sam_predictor = None
-        self.sam_prompt_points = []
-        self.sam_mask = None
+        # self.sam_segmenting = False
+        # self.sam_predictor = None
+        # self.sam_prompt_points = []
+        # self.sam_mask = None
 
         self.region_growing_enabled = False
         self.region_growing_threshold = 30
         self.region_growing_mask = None
+        
+        # 忽略区域相关属性
+        self.ignored_regions = []  # 存储所有忽略区域的多边形
+        self.current_ignored_points = []  # 当前正在绘制的忽略区域顶点
+        self.ignoring_region = False  # 是否处于忽略区域绘制模式
 
     def set_class_names(self, class_names):
         """更新当前项目类别配置。"""
@@ -354,6 +359,32 @@ class ImageLabel(QLabel):
         self.current_snap_point = None
         self.update_display()
         return True
+    
+    def save_current_ignored_region(self):
+        """保存当前忽略区域。"""
+        if self.is_summary:
+            return False
+        if len(self.current_ignored_points) < 3:
+            return False
+
+        unique_points = []
+        for point in self.current_ignored_points:
+            if not unique_points or unique_points[-1] != point:
+                unique_points.append(point)
+        if len(unique_points) < 3:
+            return False
+
+        if unique_points[0] != unique_points[-1]:
+            unique_points.append(unique_points[0])
+
+        area = calculate_polygon_area(unique_points)
+        if area <= 5:
+            return False
+
+        self.ignored_regions.append(unique_points)
+        self.current_ignored_points = []
+        self.update_display()
+        return True
 
     def confirm_preview_and_save(self):
         """将当前预览中的多 polygon 手工实例转为正式实例。"""
@@ -418,11 +449,11 @@ class ImageLabel(QLabel):
             if event.button() != Qt.LeftButton or self.is_summary:
                 return
 
-            if self.sam_segmenting:
-                image_pos = self.screen_to_image(event.pos())
-                if image_pos:
-                    self.perform_sam_segmentation(image_pos)
-                return
+            # if self.sam_segmenting:
+            #     image_pos = self.screen_to_image(event.pos())
+            #     if image_pos:
+            #         self.perform_sam_segmentation(image_pos)
+            #     return
 
             if event.modifiers() & Qt.ShiftModifier:
                 self.edge_snap_enabled = not self.edge_snap_enabled
@@ -434,6 +465,14 @@ class ImageLabel(QLabel):
 
             image_pos = self.screen_to_image(event.pos())
             if not image_pos:
+                return
+
+            if self.ignoring_region:
+                if self.current_ignored_points:
+                    self.current_ignored_points.append(image_pos)
+                else:
+                    self.current_ignored_points = [image_pos]
+                self._notify_annotation_changed()
                 return
 
             if self.current_points or self.current_plant_polygons:
@@ -733,35 +772,35 @@ class ImageLabel(QLabel):
 
         self.update_display()
 
-    def perform_sam_segmentation(self, point=None):
-        """执行 SAM 分割。"""
-        if not self.sam_predictor or self.color_image is None:
-            return
+    # def perform_sam_segmentation(self, point=None):
+    #     """执行 SAM 分割。"""
+    #     if not self.sam_predictor or self.color_image is None:
+    #         return
 
-        try:
-            if point is not None:
-                self.sam_prompt_points.append([float(point[0]), float(point[1])])
+    #     try:
+    #         if point is not None:
+    #             self.sam_prompt_points.append([float(point[0]), float(point[1])])
 
-            if not self.sam_prompt_points:
-                return
+    #         if not self.sam_prompt_points:
+    #             return
 
-            point_coords = np.array(self.sam_prompt_points)
-            point_labels = np.ones(len(point_coords), dtype=np.int32)
-            masks, _, _ = self.sam_predictor.predict(
-                point_coords=point_coords,
-                point_labels=point_labels,
-                multimask_output=True,
-            )
+    #         point_coords = np.array(self.sam_prompt_points)
+    #         point_labels = np.ones(len(point_coords), dtype=np.int32)
+    #         masks, _, _ = self.sam_predictor.predict(
+    #             point_coords=point_coords,
+    #             point_labels=point_labels,
+    #             multimask_output=True,
+    #         )
 
-            if masks is not None and len(masks) > 0:
-                best_mask_idx = int(np.argmax([np.sum(mask) for mask in masks]))
-                self.sam_mask = masks[best_mask_idx]
-                mask = (self.sam_mask * 255).astype(np.uint8)
-                self.current_points = convert_mask_to_polygon(mask)
-        except Exception as error:
-            print(f"SAM segmentation error: {error}")
+    #         if masks is not None and len(masks) > 0:
+    #             best_mask_idx = int(np.argmax([np.sum(mask) for mask in masks]))
+    #             self.sam_mask = masks[best_mask_idx]
+    #             mask = (self.sam_mask * 255).astype(np.uint8)
+    #             self.current_points = convert_mask_to_polygon(mask)
+    #     except Exception as error:
+    #         print(f"SAM segmentation error: {error}")
 
-        self.update_display()
+    #     self.update_display()
 
     def update_display(self):
         """更新显示。"""
@@ -796,6 +835,15 @@ class ImageLabel(QLabel):
                     int(pt[0] * self.scale_factor + offset_x),
                     int(pt[1] * self.scale_factor + offset_y),
                 )
+
+            # 绘制已保存的忽略区域
+            for region in self.ignored_regions:
+                if len(region) >= 3:
+                    qpts = [img_to_screen(point) for point in region]
+                    # 使用磨砂灰色覆盖
+                    painter.setBrush(QBrush(QColor(128, 128, 128, 100)))
+                    painter.setPen(QPen(QColor(100, 100, 100), 1))
+                    painter.drawPolygon(*qpts)
 
             if self.is_summary:
                 self._draw_formal_instances(painter, img_to_screen, summary_mode=True)
@@ -875,6 +923,23 @@ class ImageLabel(QLabel):
 
             if self.underMouse() and self.last_mouse_pos:
                 painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.DashLine))
+                painter.drawLine(qpts[-1], self.last_mouse_pos)
+        
+        # 绘制当前正在绘制的忽略区域
+        if self.current_ignored_points:
+            qpts = [img_to_screen(point) for point in self.current_ignored_points]
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(128, 128, 128), 2))
+            for point in qpts:
+                painter.drawEllipse(point, 4, 4)
+
+            if len(qpts) > 1:
+                painter.setPen(QPen(QColor(128, 128, 128), 2))
+                for index in range(len(qpts) - 1):
+                    painter.drawLine(qpts[index], qpts[index + 1])
+
+            if self.underMouse() and self.last_mouse_pos:
+                painter.setPen(QPen(QColor(128, 128, 128), 2, Qt.DashLine))
                 painter.drawLine(qpts[-1], self.last_mouse_pos)
 
     def _draw_snap_point(self, painter, img_to_screen):

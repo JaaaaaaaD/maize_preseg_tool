@@ -102,7 +102,7 @@ def _normalize_polygon_line(polygon, image_width, image_height):
     return coords
 
 
-def _write_yolo_label(label_path, instances, image_width, image_height, class_names):
+def _write_yolo_label(label_path, instances, image_width, image_height, class_names, ignored_regions=None):
     """写出 YOLO segmentation 标签。
 
     Ultralytics 的 txt 标签以“单个 polygon 一行”为最稳妥写法。若一个正式实例包含多个
@@ -118,34 +118,50 @@ def _write_yolo_label(label_path, instances, image_width, image_height, class_na
             coords = _normalize_polygon_line(polygon, image_width, image_height)
             if len(coords) >= 6:
                 lines.append(" ".join([str(class_id)] + coords))
+    
+    # 添加忽略区域，使用最后一个类别ID + 1作为忽略区域的类别ID
+    if ignored_regions:
+        ignore_class_id = len(class_names)
+        for region in ignored_regions:
+            if len(region) < 3:
+                continue
+            coords = _normalize_polygon_line(region, image_width, image_height)
+            if len(coords) >= 6:
+                lines.append(" ".join([str(ignore_class_id)] + coords))
 
     with open(label_path, "w", encoding="utf-8") as file:
         file.write("\n".join(lines))
 
 
-def _write_data_yaml(data_yaml_path, dataset_root, class_names):
+def _write_data_yaml(data_yaml_path, dataset_root, class_names, has_ignored_regions=False):
     """生成 Ultralytics data.yaml。"""
     image_root = os.path.join(dataset_root, "images")
+    # 如果有忽略区域，添加一个额外的类别
+    yaml_class_names = class_names.copy()
+    if has_ignored_regions:
+        yaml_class_names.append("ignored_region")
+    
     content = [
         f"path: {dataset_root}",
         f"train: {os.path.relpath(os.path.join(image_root, 'train'), dataset_root).replace(os.sep, '/')}",
         f"val: {os.path.relpath(os.path.join(image_root, 'val'), dataset_root).replace(os.sep, '/')}",
         "",
-        f"nc: {len(class_names)}",
+        f"nc: {len(yaml_class_names)}",
         "names:",
     ]
-    for index, name in enumerate(class_names):
+    for index, name in enumerate(yaml_class_names):
         content.append(f"  {index}: {name}")
 
     with open(data_yaml_path, "w", encoding="utf-8") as file:
         file.write("\n".join(content) + "\n")
 
 
-def build_project_dataset(project_id, rebuild_split=False):
+def build_project_dataset(project_id, rebuild_split=False, dataset_root=None):
     """从已完成正式标注构建项目训练集。"""
     completed_records = get_completed_records(project_id)
-    paths = get_project_paths(project_id)
-    dataset_root = paths["dataset_root"]
+    if dataset_root is None:
+        paths = get_project_paths(project_id)
+        dataset_root = paths["dataset_root"]
     os.makedirs(dataset_root, exist_ok=True)
 
     if not completed_records:
@@ -160,6 +176,7 @@ def build_project_dataset(project_id, rebuild_split=False):
     class_names = None
     train_count = 0
     val_count = 0
+    has_ignored_regions = False
 
     for record in completed_records:
         annotation = load_annotation_file(record.get("annotation_file"))
@@ -187,7 +204,12 @@ def build_project_dataset(project_id, rebuild_split=False):
         with PILImage.open(image_path) as image:
             width, height = image.size
 
-        _write_yolo_label(target_label_path, annotation["plants"], width, height, class_names)
+        # 获取忽略区域
+        ignored_regions = annotation.get("ignored_regions", [])
+        if ignored_regions:
+            has_ignored_regions = True
+
+        _write_yolo_label(target_label_path, annotation["plants"], width, height, class_names, ignored_regions)
 
         export_index.append(
             {
@@ -200,7 +222,7 @@ def build_project_dataset(project_id, rebuild_split=False):
         )
 
     class_names = list(class_names or DEFAULT_CLASS_NAMES)
-    _write_data_yaml(data_yaml_path, dataset_root, class_names)
+    _write_data_yaml(data_yaml_path, dataset_root, class_names, has_ignored_regions)
 
     return {
         "project_id": project_id,

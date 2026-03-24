@@ -73,7 +73,8 @@ SHORTCUTS = {
     "PREV_IMAGE": "Left",
     "NEXT_IMAGE": "Right",
     "TOGGLE_SAM_SEGMENTATION": "S",
-    "TOGGLE_REGION_GROWING": "G"
+    "TOGGLE_REGION_GROWING": "G",
+    "TOGGLE_IGNORE_REGION": "I"
 }
 
 # 版本信息

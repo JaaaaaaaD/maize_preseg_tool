@@ -78,14 +78,18 @@ class Toolbars:
         parent.btn_region_growing.clicked.connect(parent.toggle_region_growing)
         aux_func_layout.addWidget(parent.btn_region_growing)
 
-        parent.btn_load_sam = QPushButton("加载SAM模型")
-        parent.btn_load_sam.clicked.connect(parent.load_sam_model)
-        aux_func_layout.addWidget(parent.btn_load_sam)
+        parent.btn_ignore_region = QPushButton(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
+        parent.btn_ignore_region.clicked.connect(parent.toggle_ignore_region)
+        aux_func_layout.addWidget(parent.btn_ignore_region)
+
+        # parent.btn_load_sam = QPushButton("加载SAM模型")
+        # parent.btn_load_sam.clicked.connect(parent.load_sam_model)
+        # aux_func_layout.addWidget(parent.btn_load_sam)
         
-        parent.btn_sam_segment = QPushButton(f"SAM分割 ({SHORTCUTS['TOGGLE_SAM_SEGMENTATION']})")
-        parent.btn_sam_segment.clicked.connect(parent.toggle_sam_segmentation)
-        parent.btn_sam_segment.setEnabled(False)  # 初始禁用
-        aux_func_layout.addWidget(parent.btn_sam_segment)
+        # parent.btn_sam_segment = QPushButton(f"SAM分割 ({SHORTCUTS['TOGGLE_SAM_SEGMENTATION']})")
+        # parent.btn_sam_segment.clicked.connect(parent.toggle_sam_segmentation)
+        # parent.btn_sam_segment.setEnabled(False)  # 初始禁用
+        # aux_func_layout.addWidget(parent.btn_sam_segment)
 
         return aux_func_group
     
