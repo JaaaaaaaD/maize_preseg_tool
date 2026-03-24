@@ -1,0 +1,9 @@
+# GPU 训练需要安装 CUDA 版 torch/torchvision/torchaudio。
+# 仅执行 `pip install -r requirements.txt` 可能会装到 CPU 版，请优先使用 PyTorch 官方 CUDA 安装命令。
+PyQt5>=5.15
+Pillow>=10.0
+numpy>=1.24
+opencv-python>=4.8
+torch>=2.1
+ultralytics>=8.3.0
+PyYAML>=6.0

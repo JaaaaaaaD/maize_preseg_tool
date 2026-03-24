@@ -1,8 +1,11 @@
 # 配置文件
+import os
 
 # 模型配置
 SAM_MODEL_PATH = "sam_vit_b_01ec64.pth"  # 默认模型路径
 SAM_MODEL_TYPE = "vit_b"  # 默认模型类型
+YOLO_DEFAULT_MODEL = "yolo11n-seg.pt"
+YOLO_DEFAULT_MODEL_FAMILY = "yolo11n-seg"
 
 # 图像处理配置
 SNAP_RADIUS = 8  # 边缘吸附半径
@@ -34,7 +37,30 @@ COLOR_CHANGE_THRESHOLD = 15  # 颜色变化阈值
 ROI_SIZE = 8  # ROI区域大小
 
 # 路径配置
-ANNOTATION_DIR = "./maize_annotations/projects"  # 标注保存目录
+BASE_WORK_DIR = "./maize_annotations"
+ANNOTATION_DIR = os.path.join(BASE_WORK_DIR, "projects")  # 单图标注保存目录
+PROJECTS_ROOT = os.path.join(BASE_WORK_DIR, "project_state")  # 项目根目录
+
+# 项目级配置
+DEFAULT_CLASS_NAMES = ["plant", "stem", "leaf", "ear"]
+DEFAULT_CLASS_ID = 0
+AUTO_TRAIN_THRESHOLD = 5
+FIXED_VAL_RATIO = 0.2
+FIXED_VAL_MIN_COUNT = 1
+FIXED_VAL_SEED = 20260324
+
+# 推理配置
+INFERENCE_CONFIDENCE_THRESHOLD = 0.55
+INFERENCE_MIN_AREA = 80.0
+INFERENCE_POLYGON_EPSILON_RATIO = 0.005
+INFERENCE_MAX_CANDIDATES = 256
+
+# 训练配置
+TRAIN_EPOCHS = 50
+TRAIN_IMGSZ = 1024
+TRAIN_BATCH = 4
+TRAIN_DEVICE = "auto"  # 可选: auto / cpu / 0 / cuda:0
+TRAIN_WORKERS = 2
 
 # 快捷键配置
 SHORTCUTS = {
@@ -51,4 +77,4 @@ SHORTCUTS = {
 }
 
 # 版本信息
-VERSION = "batch_optimized_1.0"
+VERSION = "project_loop_2.0"

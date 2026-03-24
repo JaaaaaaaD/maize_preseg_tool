@@ -1,6 +1,6 @@
 # 帮助对话框
 
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QScrollArea, QVBoxLayout
 
 class HelpDialog(QDialog):
     """使用说明弹窗"""
@@ -8,8 +8,9 @@ class HelpDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("玉米植株标注工具 使用说明")
-        self.setGeometry(200, 200, 780, 680)
+        self.setMinimumSize(640, 480)
         self.init_ui()
+        self.resize_to_available_screen()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -130,8 +131,25 @@ class HelpDialog(QDialog):
             <li>对于大型图片，建议先缩小后再进行标注</li>
         </ul>
         """)
-        layout.addWidget(help_text)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(help_text)
+        layout.addWidget(scroll)
 
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
+
+    def resize_to_available_screen(self):
+        """根据屏幕大小自适应弹窗尺寸。"""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(780, 680)
+            return
+
+        geometry = screen.availableGeometry()
+        width = max(self.minimumWidth(), min(int(geometry.width() * 0.6), 980))
+        height = max(self.minimumHeight(), min(int(geometry.height() * 0.75), 820))
+        width = min(width, geometry.width())
+        height = min(height, geometry.height())
+        self.resize(width, height)
