@@ -26,6 +26,10 @@ class Toolbars:
         nav_layout = QVBoxLayout()
         nav_group.setLayout(nav_layout)
 
+        parent.btn_refresh = QPushButton("刷新项目状态")
+        parent.btn_refresh.clicked.connect(parent.refresh_project_status)
+        nav_layout.addWidget(parent.btn_refresh)
+
         parent.btn_toggle_annotation = QPushButton("标记当前图片为已完成")
         parent.btn_toggle_annotation.clicked.connect(parent.toggle_annotation_status)
         nav_layout.addWidget(parent.btn_toggle_annotation)

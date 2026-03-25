@@ -250,11 +250,35 @@ class MainWindow(QMainWindow):
         self.project_metadata, _, self.project_paths = load_project(self.project_id)
         self.project_metadata = refresh_project_counters(self.project_id)
 
+    def refresh_project_status(self):
+        """刷新项目状态，实时读取最新的已完成和未完成状态。"""
+        # 刷新项目元数据
+        self.refresh_project_metadata()
+        # 刷新属性面板
+        self.refresh_properties_panel()
+        # 刷新状态栏
+        self.update_status_bar()
+        # 显示刷新成功消息
+        QMessageBox.information(self, "刷新成功", "项目状态已更新为最新")
+
     def mark_annotation_changed(self):
         """标记当前图片有未保存修改。"""
         self.annotation_changed = True
         if self.current_image_state:
             self.current_image_state["last_modified_at"] = current_timestamp()
+        # 更新coco_container中的数据
+        if self.current_image_path:
+            annotation_state = self.left_label.get_annotation_state()
+            annotation = {
+                "plants": annotation_state["plants"],
+                "plant_groups": annotation_state["plant_groups"],
+                "current_plant_id": annotation_state["current_plant_id"],
+                "next_plant_group_id": annotation_state["next_owner_plant_id"],
+                "ignored_regions": self.left_label.ignored_regions,
+                "image_state": self.current_image_state,
+                "class_names": self.left_label.class_names
+            }
+            self.coco_container[self.current_image_path] = annotation
         self.update_status_bar()
 
     def clear_annotation_changed(self):
