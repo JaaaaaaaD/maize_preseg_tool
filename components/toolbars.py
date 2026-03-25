@@ -17,10 +17,6 @@ class Toolbars:
         parent.btn_load_batch.clicked.connect(parent.load_batch_images)
         file_layout.addWidget(parent.btn_load_batch)
 
-        parent.btn_load_single = QPushButton("加载单张图片")
-        parent.btn_load_single.clicked.connect(parent.load_single_image)
-        file_layout.addWidget(parent.btn_load_single)
-
         return file_group
     
     @staticmethod
@@ -135,23 +131,11 @@ class Toolbars:
         export_group.setLayout(export_layout)
 
         # 导入按钮组
-        parent.btn_import_coco = QPushButton("导入 COCO 数据")
-        parent.btn_import_coco.clicked.connect(parent.import_coco_data)
-        export_layout.addWidget(parent.btn_import_coco)
-        
         parent.btn_import_batch = QPushButton("批量导入数据")
         parent.btn_import_batch.clicked.connect(parent.import_batch_data)
         export_layout.addWidget(parent.btn_import_batch)
         
         # 导出按钮组
-        parent.btn_export_json = QPushButton("导出当前JSON")
-        parent.btn_export_json.clicked.connect(parent.export_simple_json)
-        export_layout.addWidget(parent.btn_export_json)
-
-        parent.btn_export_coco = QPushButton("导出当前COCO")
-        parent.btn_export_coco.clicked.connect(parent.export_coco_format)
-        export_layout.addWidget(parent.btn_export_coco)
-
         parent.btn_export_yolo = QPushButton("导出项目YOLO数据集")
         parent.btn_export_yolo.clicked.connect(parent.export_yolo_dataset)
         export_layout.addWidget(parent.btn_export_yolo)

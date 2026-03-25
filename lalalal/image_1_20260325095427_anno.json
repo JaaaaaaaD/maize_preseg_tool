@@ -1,0 +1,138 @@
+{
+  "info": {
+    "description": "Maize Plant Multi-Class Instance Segmentation Dataset",
+    "version": "project_loop_2.0",
+    "year": 2026,
+    "contributor": "Maize Preseg Tool",
+    "date_created": "2026-03-25 16:53:56",
+    "custom": {
+      "annotation_completed": true,
+      "image_name": "image_1_20260325095427.jpg",
+      "tool_version": "project_loop_2.0",
+      "last_modified_at": "2026-03-25 16:53:44",
+      "project_id": "images_raw_ad576755",
+      "current_plant_id": 3
+    }
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 793970,
+      "file_name": "image_1_20260325095427.jpg",
+      "width": 3072,
+      "height": 4096,
+      "date_captured": "",
+      "license": 0,
+      "coco_url": "",
+      "flickr_url": "",
+      "attributes": {
+        "original_path": "E:/PycharmProjects/maize_preseg_tool/images_raw/image_1_20260325095427.jpg",
+        "image_state": {
+          "image_path": "E:/PycharmProjects/maize_preseg_tool/images_raw/image_1_20260325095427.jpg",
+          "annotation_completed": true,
+          "last_modified_at": "2026-03-25 16:53:44",
+          "last_trained_seen_hash": null,
+          "dirty_since_last_train": true
+        }
+      }
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 793970,
+      "category_id": 1,
+      "segmentation": [
+        [
+          1620.0,
+          1922.0,
+          1549.0,
+          2009.0,
+          1386.0,
+          2078.0,
+          1839.0,
+          2126.0,
+          1620.0,
+          1922.0
+        ]
+      ],
+      "area": 36309.0,
+      "bbox": [
+        1386.0,
+        1922.0,
+        453.0,
+        204.0
+      ],
+      "iscrowd": 0,
+      "attributes": {
+        "instance_id": 1,
+        "class_name": "plant",
+        "source": "manual",
+        "owner_plant_id": null
+      }
+    },
+    {
+      "id": 2,
+      "image_id": 793970,
+      "category_id": 1,
+      "segmentation": [
+        [
+          1976.0,
+          1439.0,
+          1469.0,
+          1283.0,
+          1245.0,
+          1471.0,
+          1976.0,
+          1439.0
+        ]
+      ],
+      "area": 65130.0,
+      "bbox": [
+        1245.0,
+        1283.0,
+        731.0,
+        188.0
+      ],
+      "iscrowd": 0,
+      "attributes": {
+        "instance_id": 2,
+        "class_name": "plant",
+        "source": "manual",
+        "owner_plant_id": null
+      }
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "plant",
+      "supercategory": "maize_part"
+    },
+    {
+      "id": 2,
+      "name": "stem",
+      "supercategory": "maize_part"
+    },
+    {
+      "id": 3,
+      "name": "leaf",
+      "supercategory": "maize_part"
+    },
+    {
+      "id": 4,
+      "name": "ear",
+      "supercategory": "maize_part"
+    }
+  ],
+  "custom_extensions": {
+    "plant_groups": [],
+    "class_names": [
+      "plant",
+      "stem",
+      "leaf",
+      "ear"
+    ],
+    "project_id": "images_raw_ad576755"
+  }
+}

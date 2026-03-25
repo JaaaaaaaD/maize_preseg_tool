@@ -1,0 +1,102 @@
+{
+  "info": {
+    "description": "Maize Plant Multi-Class Instance Segmentation Dataset",
+    "version": "project_loop_2.0",
+    "year": 2026,
+    "contributor": "Maize Preseg Tool",
+    "date_created": "2026-03-25 16:53:56",
+    "custom": {
+      "annotation_completed": true,
+      "image_name": "image_2_20260325095431.jpg",
+      "tool_version": "project_loop_2.0",
+      "last_modified_at": "2026-03-25 16:53:48",
+      "project_id": "images_raw_ad576755",
+      "current_plant_id": 1
+    }
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 126612,
+      "file_name": "image_2_20260325095431.jpg",
+      "width": 3072,
+      "height": 4096,
+      "date_captured": "",
+      "license": 0,
+      "coco_url": "",
+      "flickr_url": "",
+      "attributes": {
+        "original_path": "E:/PycharmProjects/maize_preseg_tool/images_raw/image_2_20260325095431.jpg",
+        "image_state": {
+          "image_path": "E:/PycharmProjects/maize_preseg_tool/images_raw/image_2_20260325095431.jpg",
+          "annotation_completed": true,
+          "last_modified_at": "2026-03-25 16:53:48",
+          "last_trained_seen_hash": null,
+          "dirty_since_last_train": true
+        }
+      }
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 126612,
+      "category_id": 1,
+      "segmentation": [
+        [
+          1644.7547375908143,
+          1676.5716354214298,
+          1553.3052634252908,
+          1847.6160222865758,
+          1807.331580551745,
+          1862.857601314163,
+          1644.7547375908143,
+          1676.5716354214298
+        ]
+      ],
+      "area": 22421.789124391973,
+      "bbox": [
+        1553.3052634252908,
+        1676.5716354214298,
+        254.02631712645416,
+        186.2859658927332
+      ],
+      "iscrowd": 1,
+      "attributes": {
+        "type": "ignored_region"
+      }
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "plant",
+      "supercategory": "maize_part"
+    },
+    {
+      "id": 2,
+      "name": "stem",
+      "supercategory": "maize_part"
+    },
+    {
+      "id": 3,
+      "name": "leaf",
+      "supercategory": "maize_part"
+    },
+    {
+      "id": 4,
+      "name": "ear",
+      "supercategory": "maize_part"
+    }
+  ],
+  "custom_extensions": {
+    "plant_groups": [],
+    "class_names": [
+      "plant",
+      "stem",
+      "leaf",
+      "ear"
+    ],
+    "project_id": "images_raw_ad576755"
+  }
+}

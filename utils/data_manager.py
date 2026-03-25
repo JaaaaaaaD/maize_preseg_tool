@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 from datetime import datetime
+import tempfile
 
 from config import DEFAULT_CLASS_NAMES, VERSION
 from utils.annotation_schema import (
@@ -29,19 +30,6 @@ def _safe_file_stem(raw_name):
             safe.append(char)
     sanitized = "".join(safe).strip()
     return sanitized or "annotation"
-
-
-def get_auto_save_path(image_path):
-    """获取自动保存路径。"""
-    if not image_path:
-        return None
-    image_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-    path_hash = abs(hash(os.path.abspath(image_path))) % 10000
-    # 使用images_status目录作为保存位置
-    save_dir = os.path.join(os.getcwd(), "images_status")
-    # 确保目录存在
-    os.makedirs(save_dir, exist_ok=True)
-    return os.path.join(save_dir, f"{image_name}_{path_hash}.maize")
 
 
 def _build_project_payload(
@@ -80,65 +68,451 @@ def _build_project_payload(
         "annotation_hash": compute_annotation_hash(normalized_plants, normalized_groups, normalized_state),
         "save_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "version": VERSION,
-        "is_auto_save": True,
     }
 
 
-def save_current_annotation(
+def save_annotation_manually(
     image_path,
     plants,
-    current_plant_id,
-    plant_groups=None,
-    image_state=None,
-    project_id=None,
+    image_width,
+    image_height,
+    export_path,
     class_names=None,
     ignored_regions=None,
+    plant_groups=None,
+    image_state=None,
+    current_plant_id=None,
+    project_id=None
 ):
-    """保存当前标注。"""
-    save_path = get_auto_save_path(image_path)
-    if not save_path:
+    """手动保存标注为COCO格式。"""
+    if not image_path or not export_path:
         return False, None, None
 
     try:
-        # 确保保存目录存在（使用当前工作目录）
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        
-        # 使用COCO格式保存
-        from PIL import Image
-        img = Image.open(image_path)
-        width, height = img.size
-        
-        save_path = save_path.replace('.maize', '.json')
-        coco_path = export_coco_format(
+        # 构建COCO格式数据
+        coco_data = _build_coco_format(
             image_path,
             plants,
-            width,
-            height,
-            export_path=save_path,
+            image_width,
+            image_height,
             class_names=class_names,
             ignored_regions=ignored_regions,
             plant_groups=plant_groups,
             image_state=image_state,
             current_plant_id=current_plant_id,
-            project_id=project_id,
+            project_id=project_id
         )
-        
-        # 构建payload用于返回
+
+        # 创建导出目录
+        export_dir = os.path.dirname(export_path)
+        os.makedirs(export_dir, exist_ok=True)
+
+        # 备份旧文件
+        _backup_old_file(export_path)
+
+        # 原子写入：先写临时文件，再重命名
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', dir=export_dir)
+        temp_path = temp_file.name
+        try:
+            json.dump(coco_data, temp_file, ensure_ascii=False, indent=2)
+            temp_file.close()
+            # 重命名临时文件为目标文件
+            os.replace(temp_path, export_path)
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+
+        # 构建返回的payload
         payload = _build_project_payload(
             image_path,
             plants,
-            current_plant_id,
+            current_plant_id or 1,
             plant_groups=plant_groups,
             image_state=image_state,
             project_id=project_id,
             class_names=class_names,
             ignored_regions=ignored_regions,
         )
-        
-        return True, coco_path, payload
+
+        return True, export_path, payload
     except Exception as error:
         print(f"保存标注失败: {error}")
         return False, None, None
+
+
+def _backup_old_file(file_path):
+    """备份旧文件，保留最近3个版本。"""
+    if not os.path.exists(file_path):
+        return
+
+    try:
+        # 备份目录
+        backup_dir = os.path.join(os.path.dirname(file_path), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+
+        # 生成备份文件名
+        base_name = os.path.basename(file_path)
+        name_without_ext = os.path.splitext(base_name)[0]
+        ext = os.path.splitext(base_name)[1]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{name_without_ext}_{timestamp}{ext}"
+        backup_path = os.path.join(backup_dir, backup_name)
+
+        # 复制文件到备份目录
+        shutil.copy2(file_path, backup_path)
+
+        # 清理旧备份，只保留最近3个
+        backup_files = sorted(
+            [f for f in os.listdir(backup_dir) if f.startswith(name_without_ext) and f.endswith(ext)],
+            key=lambda x: os.path.getmtime(os.path.join(backup_dir, x)),
+            reverse=True
+        )
+
+        for old_backup in backup_files[3:]:
+            try:
+                os.remove(os.path.join(backup_dir, old_backup))
+            except:
+                pass
+    except Exception as e:
+        print(f"备份文件失败: {e}")
+
+
+def _build_coco_format(
+    image_path,
+    plants,
+    image_width,
+    image_height,
+    class_names=None,
+    ignored_regions=None,
+    plant_groups=None,
+    image_state=None,
+    current_plant_id=None,
+    project_id=None,
+):
+    """构建标准COCO格式数据。"""
+    class_names = list(class_names or DEFAULT_CLASS_NAMES)
+
+    # 提取图片名称（不包含路径）
+    image_name = os.path.basename(image_path)
+    
+    # 生成唯一的图片ID（基于图片路径的哈希值）
+    image_id = abs(hash(image_path)) % 1000000
+    
+    # 构建COCO数据结构
+    coco_data = {
+        "info": {
+            "description": "Maize Plant Multi-Class Instance Segmentation Dataset",
+            "version": VERSION,
+            "year": datetime.now().year,
+            "contributor": "Maize Preseg Tool",
+            "date_created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "custom": {
+                "annotation_completed": image_state.get("annotation_completed", False) if image_state else False,
+                "image_name": image_name,
+                "tool_version": VERSION,
+                "last_modified_at": image_state.get("last_modified_at") if image_state else datetime.now().isoformat(),
+                "project_id": project_id,
+                "current_plant_id": current_plant_id or 1
+            }
+        },
+        "licenses": [],
+        "images": [
+            {
+                "id": image_id,
+                "file_name": image_name,
+                "width": image_width,
+                "height": image_height,
+                "date_captured": "",
+                "license": 0,
+                "coco_url": "",
+                "flickr_url": "",
+                "attributes": {
+                    "original_path": image_path,
+                    "image_state": image_state or {}
+                }
+            }
+        ],
+        "annotations": [],
+        "categories": [
+            {
+                "id": class_id + 1,
+                "name": class_name,
+                "supercategory": "maize_part",
+            }
+            for class_id, class_name in enumerate(class_names)
+        ],
+        "custom_extensions": {
+            "plant_groups": plant_groups or [],
+            "class_names": class_names,
+            "project_id": project_id
+        }
+    }
+
+    annotation_id = 1
+    
+    # 添加植物实例标注
+    for plant in plants or []:
+        segmentation = []
+        x_coords = []
+        y_coords = []
+        total_area = 0.0
+
+        for polygon in plant.get("polygons", []):
+            if len(polygon) < 3:
+                continue
+            # 确保多边形闭合
+            if polygon[0] != polygon[-1]:
+                polygon.append(polygon[0])
+            segmentation.append([coord for point in polygon for coord in (point[0], point[1])])
+            x_coords.extend([point[0] for point in polygon])
+            y_coords.extend([point[1] for point in polygon])
+            total_area += float(calculate_polygon_area(polygon))
+
+        if not segmentation:
+            continue
+
+        x_min = min(x_coords)
+        y_min = min(y_coords)
+        width = max(x_coords) - x_min
+        height = max(y_coords) - y_min
+
+        coco_data["annotations"].append(
+            {
+                "id": annotation_id,
+                "image_id": image_id,
+                "category_id": int(plant.get("class_id", 0)) + 1,
+                "segmentation": segmentation,
+                "area": float(total_area),
+                "bbox": [x_min, y_min, width, height],
+                "iscrowd": 0,
+                "attributes": {
+                    "instance_id": plant.get("id", 0),
+                    "class_name": plant.get("class_name"),
+                    "source": plant.get("source"),
+                    "owner_plant_id": plant.get("owner_plant_id"),
+                },
+            }
+        )
+        annotation_id += 1
+
+    # 添加忽略区域（使用iscrowd=1的annotation格式）
+    for region in ignored_regions or []:
+        if len(region) < 3:
+            continue
+        # 确保多边形闭合
+        if region[0] != region[-1]:
+            region.append(region[0])
+        
+        segmentation = [[coord for point in region for coord in (point[0], point[1])]]
+        x_coords = [point[0] for point in region]
+        y_coords = [point[1] for point in region]
+        total_area = float(calculate_polygon_area(region))
+
+        x_min = min(x_coords)
+        y_min = min(y_coords)
+        width = max(x_coords) - x_min
+        height = max(y_coords) - y_min
+
+        coco_data["annotations"].append(
+            {
+                "id": annotation_id,
+                "image_id": image_id,
+                "category_id": 1,  # 使用第一个类别作为默认
+                "segmentation": segmentation,
+                "area": float(total_area),
+                "bbox": [x_min, y_min, width, height],
+                "iscrowd": 1,  # 标记为忽略区域
+                "attributes": {
+                    "type": "ignored_region"
+                },
+            }
+        )
+        annotation_id += 1
+
+    return coco_data
+
+
+def load_annotation_from_coco(coco_path, class_names=None):
+    """从COCO文件加载标注。"""
+    if not coco_path or not os.path.exists(coco_path):
+        # 尝试从备份恢复
+        backup_path = _try_restore_from_backup(coco_path)
+        if backup_path:
+            coco_path = backup_path
+        else:
+            return None
+
+    try:
+        with open(coco_path, "r", encoding="utf-8") as file:
+            coco_data = json.load(file)
+        
+        # 验证COCO格式
+        if not _validate_coco_format(coco_data):
+            return None
+        
+        # 转换COCO格式为内部格式
+        plants = []
+        ignored_regions = []
+        
+        for ann in coco_data.get("annotations", []):
+            if ann.get("iscrowd") == 1:
+                # 处理忽略区域
+                segmentation = ann.get("segmentation", [])
+                for seg in segmentation:
+                    if len(seg) >= 6:
+                        polygon = []
+                        for i in range(0, len(seg), 2):
+                            polygon.append((seg[i], seg[i+1]))
+                        if len(polygon) >= 3:
+                            ignored_regions.append(polygon)
+            else:
+                # 处理正常实例
+                segmentation = ann.get("segmentation", [])
+                polygons = []
+                
+                for seg in segmentation:
+                    if len(seg) >= 6:
+                        polygon = []
+                        for i in range(0, len(seg), 2):
+                            polygon.append((seg[i], seg[i+1]))
+                        if len(polygon) >= 3:
+                            polygons.append(polygon)
+                
+                if not polygons:
+                    continue
+                
+                # 获取类别信息
+                class_id = ann.get("category_id", 0)
+                class_name = "unknown"
+                
+                # 查找类别名称
+                for cat in coco_data.get("categories", []):
+                    if cat.get("id") == class_id:
+                        class_name = cat.get("name", "unknown")
+                        break
+                
+                # 创建植物实例
+                plant = {
+                    "id": ann.get("attributes", {}).get("instance_id", len(plants) + 1),
+                    "class_id": class_id - 1,  # 转换为从0开始的索引
+                    "class_name": class_name,
+                    "polygons": polygons,
+                    "bbox": ann.get("bbox", []),
+                    "area": ann.get("area", 0),
+                    "iscrowd": ann.get("iscrowd", 0),
+                    "source": ann.get("attributes", {}).get("source"),
+                    "owner_plant_id": ann.get("attributes", {}).get("owner_plant_id")
+                }
+                plants.append(plant)
+        
+        # 获取图片信息
+        image_info = coco_data.get("images", [{}])[0]
+        image_path = image_info.get("attributes", {}).get("original_path")
+        
+        # 获取自定义扩展信息
+        plant_groups = coco_data.get("custom_extensions", {}).get("plant_groups", [])
+        class_names = coco_data.get("custom_extensions", {}).get("class_names", class_names)
+        project_id = coco_data.get("custom_extensions", {}).get("project_id")
+        
+        # 获取图像状态
+        image_state = image_info.get("attributes", {}).get("image_state", {})
+        # 从info.custom中获取标注完成状态
+        if "info" in coco_data and "custom" in coco_data["info"]:
+            custom_info = coco_data["info"]["custom"]
+            image_state["annotation_completed"] = custom_info.get("annotation_completed", False)
+            image_state["last_modified_at"] = custom_info.get("last_modified_at", datetime.now().isoformat())
+        
+        # 构建内部格式payload
+        internal_payload = {
+            "image_path": image_path,
+            "project_id": project_id,
+            "class_names": class_names,
+            "plants": plants,
+            "plant_groups": plant_groups,
+            "current_plant_id": coco_data.get("info", {}).get("custom", {}).get("current_plant_id", 1),
+            "image_state": image_state,
+            "ignored_regions": ignored_regions,
+        }
+        
+        return _normalize_loaded_payload(internal_payload, class_names=class_names)
+    except Exception as error:
+        print(f"加载COCO标注失败: {error}")
+        return None
+
+
+def _try_restore_from_backup(file_path):
+    """尝试从备份恢复文件。"""
+    if not file_path:
+        return None
+    
+    backup_dir = os.path.join(os.path.dirname(file_path), "backups")
+    if not os.path.exists(backup_dir):
+        return None
+    
+    base_name = os.path.basename(file_path)
+    name_without_ext = os.path.splitext(base_name)[0]
+    ext = os.path.splitext(base_name)[1]
+    
+    # 查找备份文件
+    backup_files = sorted(
+        [f for f in os.listdir(backup_dir) if f.startswith(name_without_ext) and f.endswith(ext)],
+        key=lambda x: os.path.getmtime(os.path.join(backup_dir, x)),
+        reverse=True
+    )
+    
+    if backup_files:
+        latest_backup = os.path.join(backup_dir, backup_files[0])
+        try:
+            # 复制备份文件到原位置
+            shutil.copy2(latest_backup, file_path)
+            print(f"从备份恢复文件: {latest_backup}")
+            return file_path
+        except:
+            return None
+    
+    return None
+
+
+def _validate_coco_format(coco_data):
+    """验证COCO格式的有效性。"""
+    try:
+        # 检查必要字段
+        if not isinstance(coco_data, dict):
+            return False
+        
+        if "images" not in coco_data or not isinstance(coco_data["images"], list):
+            return False
+        
+        if "annotations" not in coco_data or not isinstance(coco_data["annotations"], list):
+            return False
+        
+        if "categories" not in coco_data or not isinstance(coco_data["categories"], list):
+            return False
+        
+        # 检查images字段
+        for image in coco_data["images"]:
+            if not isinstance(image, dict):
+                return False
+            if "id" not in image or "file_name" not in image:
+                return False
+            if "width" not in image or "height" not in image:
+                return False
+        
+        # 检查annotations字段
+        for ann in coco_data["annotations"]:
+            if not isinstance(ann, dict):
+                return False
+            if "id" not in ann or "image_id" not in ann:
+                return False
+            if "category_id" not in ann or "segmentation" not in ann:
+                return False
+        
+        return True
+    except:
+        return False
 
 
 def _normalize_loaded_payload(payload, image_path=None, class_names=None):
@@ -162,372 +536,154 @@ def _normalize_loaded_payload(payload, image_path=None, class_names=None):
         "current_plant_id": next_instance_id(plants, payload.get("current_plant_id", 1)),
         "next_plant_group_id": next_plant_group_id(plant_groups),
         "image_state": image_state,
+        "ignored_regions": payload.get("ignored_regions", []),
         "annotation_hash": annotation_hash,
-        "version": payload.get("version", VERSION),
+        "version": VERSION,
     }
 
 
-def load_annotation_file(save_path, class_names=None):
-    """加载标注文件（支持COCO格式和旧.maize格式）。"""
-    if not save_path or not os.path.exists(save_path):
-        return None
-
-    try:
-        with open(save_path, "r", encoding="utf-8") as file:
-            payload = json.load(file)
-        
-        # 检查是否为COCO格式
-        if "annotations" in payload and "images" in payload:
-            # 转换COCO格式为内部格式
-            plants = []
-            for ann in payload.get("annotations", []):
-                # 处理分割数据
-                segmentation = ann.get("segmentation", [])
-                polygons = []
-                
-                if isinstance(segmentation, list):
-                    for seg in segmentation:
-                        if len(seg) >= 6:
-                            # COCO 格式：[x1, y1, x2, y2, ...]
-                            polygon = []
-                            for i in range(0, len(seg), 2):
-                                polygon.append((seg[i], seg[i+1]))
-                            if len(polygon) >= 3:
-                                polygons.append(polygon)
-                
-                if not polygons:
-                    continue
-                
-                # 获取类别信息
-                class_id = ann.get("category_id", 0)
-                class_name = "unknown"
-                
-                # 查找类别名称
-                for cat in payload.get("categories", []):
-                    if cat.get("id") == class_id:
-                        class_name = cat.get("name", "unknown")
-                        break
-                
-                # 创建植物实例
-                plant = {
-                    "id": len(plants) + 1,
-                    "class_id": class_id - 1,  # 转换为从0开始的索引
-                    "class_name": class_name,
-                    "polygons": polygons,
-                    "bbox": ann.get("bbox", []),
-                    "area": ann.get("area", 0),
-                    "iscrowd": ann.get("iscrowd", 0)
-                }
-                plants.append(plant)
-            
-            # 处理忽略区域
-            ignored_regions = []
-            for region in payload.get("ignored_regions", []):
-                # 检查是否是我们保存的格式（对象格式）
-                if isinstance(region, dict) and "segmentation" in region:
-                    # 处理对象格式的忽略区域
-                    segmentation = region.get("segmentation", [])
-                    if isinstance(segmentation, list):
-                        for seg in segmentation:
-                            if len(seg) >= 6:
-                                polygon = []
-                                for i in range(0, len(seg), 2):
-                                    polygon.append((seg[i], seg[i+1]))
-                                if len(polygon) >= 3:
-                                    ignored_regions.append(polygon)
-                elif isinstance(region, list) and len(region) >= 3:
-                    # 直接使用多边形
-                    ignored_regions.append(region)
-            
-            # 构建内部格式payload
-            internal_payload = {
-                "image_path": payload.get("image_path"),
-                "project_id": payload.get("project_id"),
-                "class_names": payload.get("class_names", class_names),
-                "plants": plants,
-                "plant_groups": payload.get("plant_groups", []),
-                "current_plant_id": payload.get("current_plant_id", 1),
-                "image_state": payload.get("image_state", {}),
-                "ignored_regions": ignored_regions,
-            }
-            return _normalize_loaded_payload(internal_payload, class_names=class_names)
-        else:
-            # 旧格式处理
-            return _normalize_loaded_payload(payload, class_names=class_names)
-    except Exception as error:
-        print(f"加载标注失败: {error}")
-        return None
+def load_annotation_file(file_path, class_names=None):
+    """加载标注文件（兼容旧接口）。"""
+    return load_annotation_from_coco(file_path, class_names=class_names)
 
 
-def load_current_annotation(image_path, class_names=None):
-    """加载当前标注。"""
-    load_path = get_auto_save_path(image_path)
-    load_path = load_path.replace('.maize', '.json')
-    if not load_path or not os.path.exists(load_path):
-        return None
-    annotation = load_annotation_file(load_path, class_names=class_names)
-    if annotation:
-        annotation["image_path"] = image_path
-    return annotation
-
-
-def export_simple_json(image_path, plants, plant_groups=None, image_state=None, export_path=None, class_names=None, ignored_regions=None):
-    """导出为扩展简单 JSON 格式。"""
-    if not image_path:
-        return None
-
-    try:
-        payload = _build_project_payload(
-            image_path,
-            plants,
-            current_plant_id=1,
-            plant_groups=plant_groups,
-            image_state=image_state,
-            class_names=class_names,
-            ignored_regions=ignored_regions,
-        )
-        
-        if not export_path:
-            base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-            # 使用当前工作目录作为默认导出目录
-            export_dir = os.getcwd()
-            export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
-        else:
-            export_dir = os.path.dirname(export_path)
-        
-        os.makedirs(export_dir, exist_ok=True)
-
-        with open(export_path, "w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
-
-        return export_path
-    except Exception as error:
-        print(f"导出 JSON 失败: {error}")
-        return None
-
-
-def export_coco_format(
-    image_path,
-    plants,
-    image_width,
-    image_height,
-    export_path=None,
-    class_names=None,
-    ignored_regions=None,
-    plant_groups=None,
-    image_state=None,
-    current_plant_id=None,
+def batch_export_annotations(
+    image_paths,
+    export_dir,
     project_id=None,
+    progress_callback=None,
+    coco_container=None
 ):
-    """导出为 COCO 格式。
-
-    这里按“正式实例”为 annotation 单位；若一个实例包含多个 polygon，则写成一个
-    segmentation 数组列表，保持与正式层的实例概念一致。
-    """
-    if not image_path:
-        return None
-
-    class_names = list(class_names or DEFAULT_CLASS_NAMES)
+    """批量导出标注为COCO格式。"""
+    if not image_paths or not export_dir:
+        return {"exported": 0, "errors": 0}
 
     try:
-        # 提取图片名称（不包含路径）
-        image_name = os.path.basename(image_path)
-        
-        # 生成唯一的图片ID（基于图片路径的哈希值）
-        image_id = abs(hash(image_path)) % 1000000
-        
-        coco_data = {
-            "info": {
-                "description": "Maize Plant Multi-Class Instance Segmentation Dataset",
-                "version": VERSION,
-                "year": datetime.now().year,
-                "contributor": "Maize Preseg Tool",
-                "date_created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            },
-            "licenses": [],
-            "images": [
-                {
-                    "id": image_id,
-                    "file_name": image_name,
-                    "image_name": image_name,  # 添加图片名称字段
-                    "width": image_width,
-                    "height": image_height,
-                    "date_captured": "",
-                    "license": 0,
-                    "coco_url": "",
-                    "flickr_url": "",
-                }
-            ],
-            "annotations": [],
-            "categories": [
-                {
-                    "id": class_id + 1,
-                    "name": class_name,
-                    "supercategory": "maize_part",
-                }
-                for class_id, class_name in enumerate(class_names)
-            ],
-            "ignored_regions": [],
-            "plant_groups": plant_groups or [],
-            "image_state": image_state or {},
-            "current_plant_id": current_plant_id or 1,
-            "project_id": project_id,
-            "class_names": class_names,
-            "image_path": image_path,
-        }
-
-        annotation_id = 1
-        for plant in plants or []:
-            segmentation = []
-            x_coords = []
-            y_coords = []
-            total_area = 0.0
-
-            for polygon in plant.get("polygons", []):
-                if len(polygon) < 3:
-                    continue
-                segmentation.append([coord for point in polygon for coord in (point[0], point[1])])
-                x_coords.extend([point[0] for point in polygon])
-                y_coords.extend([point[1] for point in polygon])
-                total_area += float(calculate_polygon_area(polygon))
-
-            if not segmentation:
-                continue
-
-            x_min = min(x_coords)
-            y_min = min(y_coords)
-            width = max(x_coords) - x_min
-            height = max(y_coords) - y_min
-
-            coco_data["annotations"].append(
-                {
-                    "id": annotation_id,
-                    "image_id": image_id,
-                    "category_id": int(plant.get("class_id", 0)) + 1,
-                    "segmentation": segmentation,
-                    "area": float(total_area),
-                    "bbox": [x_min, y_min, width, height],
-                    "iscrowd": 0,
-                    "attributes": {
-                        "instance_id": plant.get("id", 0),
-                        "class_name": plant.get("class_name"),
-                        "source": plant.get("source"),
-                        "owner_plant_id": plant.get("owner_plant_id"),
-                    },
-                }
-            )
-            annotation_id += 1
-
-        # 添加忽略区域
-        for region in ignored_regions or []:
-            segmentation = []
-            x_coords = []
-            y_coords = []
-            total_area = 0.0
-
-            if len(region) >= 3:
-                segmentation.append([coord for point in region for coord in (point[0], point[1])])
-                x_coords.extend([point[0] for point in region])
-                y_coords.extend([point[1] for point in region])
-                total_area += float(calculate_polygon_area(region))
-
-                if segmentation:
-                    x_min = min(x_coords)
-                    y_min = min(y_coords)
-                    width = max(x_coords) - x_min
-                    height = max(y_coords) - y_min
-
-                    coco_data["ignored_regions"].append({
-                        "segmentation": segmentation,
-                        "area": float(total_area),
-                        "bbox": [x_min, y_min, width, height]
-                    })
-
-        if not export_path:
-            base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-            # 使用当前工作目录作为默认导出目录
-            export_dir = os.getcwd()
-            export_path = os.path.join(export_dir, f"{base_name}_coco.json")
-        else:
-            export_dir = os.path.dirname(export_path)
-        
-        os.makedirs(export_dir, exist_ok=True)
-
-        with open(export_path, "w", encoding="utf-8") as file:
-            json.dump(coco_data, file, ensure_ascii=False, indent=2)
-
-        return export_path
-    except Exception as error:
-        print(f"导出 COCO 格式失败: {error}")
-        return None
-
-
-def export_completed_annotations(project_id, export_dir=None):
-    """批量导出项目下所有已完成图片的简单 JSON。"""
-    completed_records = get_completed_records(project_id)
-    if not completed_records:
-        return None, 0
-
-    try:
-        # 使用当前工作目录作为默认导出目录
-        export_dir = export_dir or os.path.join(os.getcwd(), f"completed_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(export_dir, exist_ok=True)
         exported_count = 0
+        error_count = 0
+        total = len(image_paths)
 
-        for record in completed_records:
-            annotation = load_annotation_file(record.get("annotation_file"))
-            if not annotation:
-                continue
-            base_name = _safe_file_stem(os.path.splitext(os.path.basename(annotation["image_path"]))[0])
-            export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
-            json_path = export_simple_json(
-                annotation["image_path"],
-                annotation["plants"],
-                plant_groups=annotation.get("plant_groups"),
-                image_state=annotation.get("image_state"),
-                export_path=export_path,
-                class_names=annotation.get("class_names"),
-                ignored_regions=annotation.get("ignored_regions"),
-            )
-            if json_path:
-                exported_count += 1
+        for i, image_path in enumerate(image_paths):
+            if progress_callback and not progress_callback(i + 1, total, f"导出: {os.path.basename(image_path)}"):
+                break
 
-        return export_dir, exported_count
+            try:
+                # 优先从coco_container获取标注数据
+                if coco_container and image_path in coco_container:
+                    annotation = coco_container[image_path]
+                else:
+                    # 尝试从文件加载标注数据
+                    base_name = os.path.splitext(os.path.basename(image_path))[0]
+                    coco_path = os.path.join(os.path.dirname(image_path), f"{base_name}_coco.json")
+                    annotation = load_annotation_from_coco(coco_path)
+                
+                if not annotation:
+                    error_count += 1
+                    continue
+                
+                # 检查是否已标注
+                if not annotation.get("image_state", {}).get("annotation_completed", False):
+                    continue
+                
+                # 构建导出路径，使用原图片名+anno
+                base_name = os.path.splitext(os.path.basename(image_path))[0]
+                export_path = os.path.join(export_dir, f"{base_name}_anno.json")
+                
+                # 获取图片实际宽度和高度
+                from PIL import Image
+                try:
+                    with Image.open(image_path) as img:
+                        width, height = img.size
+                except:
+                    width, height = 0, 0
+                
+                # 保存标注
+                success, _, _ = save_annotation_manually(
+                    image_path,
+                    annotation.get("plants", []),
+                    width,
+                    height,
+                    export_path,
+                    class_names=annotation.get("class_names"),
+                    ignored_regions=annotation.get("ignored_regions"),
+                    plant_groups=annotation.get("plant_groups"),
+                    image_state=annotation.get("image_state"),
+                    current_plant_id=annotation.get("current_plant_id"),
+                    project_id=project_id
+                )
+                
+                if success:
+                    exported_count += 1
+                else:
+                    error_count += 1
+            except Exception as e:
+                print(f"导出 {image_path} 失败: {e}")
+                error_count += 1
+
+        return {"exported": exported_count, "errors": error_count}
     except Exception as error:
         print(f"批量导出失败: {error}")
-        return None, 0
+        return {"exported": 0, "errors": len(image_paths)}
 
 
-def copy_completed_annotations_to_dir(project_id, export_dir):
-    """将已完成图片的 .maize 与 JSON 一并导出。"""
-    completed_records = get_completed_records(project_id)
-    if not completed_records:
-        return None, 0
+def batch_import_annotations(
+    import_dir,
+    image_paths,
+    project_id,
+    conflict_strategy="skip",
+    progress_callback=None
+):
+    """批量导入COCO格式标注。"""
+    if not import_dir or not image_paths:
+        return {"imported": 0, "skipped": 0, "errors": 0}
 
     try:
-        os.makedirs(export_dir, exist_ok=True)
-        exported_count = 0
-        for record in completed_records:
-            annotation_file = record.get("annotation_file")
-            if annotation_file and os.path.exists(annotation_file):
-                shutil.copy2(annotation_file, os.path.join(export_dir, os.path.basename(annotation_file)))
-            annotation = load_annotation_file(annotation_file)
-            if not annotation:
-                continue
-            base_name = _safe_file_stem(os.path.splitext(os.path.basename(annotation["image_path"]))[0])
-            export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
-            json_path = export_simple_json(
-                annotation["image_path"],
-                annotation["plants"],
-                plant_groups=annotation.get("plant_groups"),
-                image_state=annotation.get("image_state"),
-                export_path=export_path,
-                class_names=annotation.get("class_names"),
-                ignored_regions=annotation.get("ignored_regions"),
-            )
-            if json_path:
-                exported_count += 1
-        return export_dir, exported_count
+        imported_count = 0
+        skipped_count = 0
+        error_count = 0
+        total = len(image_paths)
+
+        # 收集所有COCO文件
+        coco_files = [f for f in os.listdir(import_dir) if f.endswith(".json")]
+        
+        # 创建临时COCO容器
+        temp_coco_container = {}
+
+        for i, image_path in enumerate(image_paths):
+            if progress_callback and not progress_callback(i + 1, total, f"导入: {os.path.basename(image_path)}"):
+                break
+
+            try:
+                # 查找对应的COCO文件
+                image_name = os.path.basename(image_path)
+                base_name = os.path.splitext(image_name)[0]
+                coco_file = None
+
+                for f in coco_files:
+                    if (f.startswith(base_name) and f.endswith("_coco.json")) or f.startswith(base_name) and f.endswith("_anno.json"):
+                        coco_file = os.path.join(import_dir, f)
+                        break
+
+                if not coco_file:
+                    skipped_count += 1
+                    continue
+
+                # 加载COCO文件
+                annotation = load_annotation_from_coco(coco_file)
+                if not annotation:
+                    error_count += 1
+                    continue
+
+                # 将标注数据存储到临时COCO容器
+                temp_coco_container[image_path] = annotation
+                imported_count += 1
+
+            except Exception as e:
+                print(f"导入 {image_path} 失败: {e}")
+                error_count += 1
+
+        return {"imported": imported_count, "skipped": skipped_count, "errors": error_count, "temp_coco_container": temp_coco_container}
     except Exception as error:
-        print(f"导出项目标注失败: {error}")
-        return None, 0
+        print(f"批量导入失败: {error}")
+        return {"imported": 0, "skipped": 0, "errors": len(image_paths), "temp_coco_container": {}}
