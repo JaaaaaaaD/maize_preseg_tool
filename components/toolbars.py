@@ -86,6 +86,14 @@ class Toolbars:
         parent.btn_ignore_region.clicked.connect(parent.toggle_ignore_region)
         aux_func_layout.addWidget(parent.btn_ignore_region)
 
+        parent.btn_clear_last_ignore = QPushButton("清除上一个忽略区域")
+        parent.btn_clear_last_ignore.clicked.connect(parent.clear_last_ignore_region)
+        aux_func_layout.addWidget(parent.btn_clear_last_ignore)
+
+        parent.btn_clear_all_ignore = QPushButton("清除所有忽略区域")
+        parent.btn_clear_all_ignore.clicked.connect(parent.clear_all_ignore_regions)
+        aux_func_layout.addWidget(parent.btn_clear_all_ignore)
+
         parent.btn_toggle_ai = QPushButton("AI辅助: 开启")
         parent.btn_toggle_ai.clicked.connect(parent.toggle_ai_assist)
         aux_func_layout.addWidget(parent.btn_toggle_ai)

@@ -845,9 +845,12 @@ class ImageLabel(QLabel):
             for region in self.ignored_regions:
                 if len(region) >= 3:
                     qpts = [img_to_screen(point) for point in region]
-                    # 使用磨砂灰色覆盖，透明度20%
-                    painter.setBrush(QBrush(QColor(128, 128, 128, 51)))
-                    painter.setPen(QPen(QColor(100, 100, 100), 1))
+                    # 使用黑色斜线阴影，透明度0%
+                    brush = QBrush()
+                    brush.setColor(QColor(0, 0, 0, 255))  # 黑色，完全不透明
+                    brush.setStyle(Qt.Dense7Pattern)  # 斜线阴影模式
+                    painter.setBrush(brush)
+                    painter.setPen(QPen(QColor(0, 0, 0), 1))
                     painter.drawPolygon(*qpts)
 
             if self.is_summary:

@@ -860,6 +860,23 @@ class MainWindow(QMainWindow):
         self.left_label.update_display()
         self.update_status_bar()
 
+    def clear_last_ignore_region(self):
+        """清除上一个忽略区域。"""
+        if self.left_label.ignored_regions:
+            self.left_label.ignored_regions.pop()
+            self.left_label.update_display()
+            self.sync_summary_view()
+            self.mark_annotation_changed()
+            self.update_status_bar()
+
+    def clear_all_ignore_regions(self):
+        """清除所有忽略区域。"""
+        self.left_label.ignored_regions = []
+        self.left_label.update_display()
+        self.sync_summary_view()
+        self.mark_annotation_changed()
+        self.update_status_bar()
+
     def show_help(self):
         dialog = HelpDialog(self)
         dialog.exec_()
