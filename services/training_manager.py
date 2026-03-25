@@ -121,10 +121,14 @@ class TrainingManager(QObject):
         self.training_finished.emit(False, payload)
         return False, payload
 
-    def check_and_trigger_training(self, force=False, rebuild_split=False):
+    def check_and_trigger_training(self, force=False, rebuild_split=False, ai_assist_enabled=True):
         """检查阈值并启动训练。"""
         if not self.project_id or not self.registry:
             return False, "当前没有活动项目"
+
+        # 如果AI辅助已关闭，不触发自动训练
+        if not ai_assist_enabled and not force:
+            return False, "AI辅助已关闭，不触发自动训练"
 
         metadata = refresh_project_counters(self.project_id)
         completed_count = int(metadata.get("completed_image_count", 0))
@@ -132,7 +136,7 @@ class TrainingManager(QObject):
         threshold = int(metadata.get("auto_train_threshold", AUTO_TRAIN_THRESHOLD))
 
         if self.is_training():
-            self.pending_retrain = self.pending_retrain or dirty_count >= threshold or force
+            self.pending_retrain = self.pending_retrain or (dirty_count >= threshold and ai_assist_enabled) or force
             return False, "训练已在进行中"
 
         if completed_count <= 0:

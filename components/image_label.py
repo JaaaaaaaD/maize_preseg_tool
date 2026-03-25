@@ -93,6 +93,11 @@ class ImageLabel(QLabel):
         self.ignored_regions = []  # 存储所有忽略区域的多边形
         self.current_ignored_points = []  # 当前正在绘制的忽略区域顶点
         self.ignoring_region = False  # 是否处于忽略区域绘制模式
+        
+        # 去除区域相关属性
+        self.current_removal_points = []  # 当前正在绘制的去除区域顶点
+        self.removal_regions = []  # 存储当前植株的去除区域
+        self.removing_region = False  # 是否处于去除区域绘制模式
 
     def set_class_names(self, class_names):
         """更新当前项目类别配置。"""
@@ -386,6 +391,32 @@ class ImageLabel(QLabel):
         self.update_display()
         return True
 
+    def save_current_removal_region(self):
+        """保存当前去除区域。"""
+        if self.is_summary:
+            return False
+        if len(self.current_removal_points) < 3:
+            return False
+
+        unique_points = []
+        for point in self.current_removal_points:
+            if not unique_points or unique_points[-1] != point:
+                unique_points.append(point)
+        if len(unique_points) < 3:
+            return False
+
+        if unique_points[0] != unique_points[-1]:
+            unique_points.append(unique_points[0])
+
+        area = calculate_polygon_area(unique_points)
+        if area <= 5:
+            return False
+
+        self.removal_regions.append(unique_points)
+        self.current_removal_points = []
+        self.update_display()
+        return True
+
     def confirm_preview_and_save(self):
         """将当前预览中的多 polygon 手工实例转为正式实例。"""
         if self.is_summary:
@@ -396,25 +427,72 @@ class ImageLabel(QLabel):
         if self.current_points:
             self.save_current_polygon()
 
+        # 保存当前正在绘制的去除区域
+        if self.current_removal_points:
+            self.save_current_removal_region()
+
         if len(self.current_plant_polygons) == 0:
             return False
 
+        # 构建最终多边形列表：第一个为外轮廓，后续为内孔
+        final_polygons = []
+        
+        # 添加外轮廓（第一个主多边形）
+        for poly in self.current_plant_polygons:
+            if len(poly) >= 3:
+                # 确保多边形是闭合的
+                if poly[0] != poly[-1]:
+                    poly.append(poly[0])
+                # 确保外轮廓为顺时针方向
+                if self._get_polygon_area(poly) < 0:
+                    poly = poly[::-1]  # 反转顶点顺序
+                final_polygons.append(poly)
+                break  # 只使用第一个主多边形作为外轮廓
+
+        # 添加内孔（所有去除区域）
+        for poly in self.removal_regions:
+            if len(poly) >= 3:
+                # 确保多边形是闭合的
+                if poly[0] != poly[-1]:
+                    poly.append(poly[0])
+                
+                # 计算去除区域与外轮廓的交集
+                outer_contour = final_polygons[0] if final_polygons else None
+                if outer_contour:
+                    intersection_poly = self._polygon_intersection(outer_contour, poly)
+                    if intersection_poly and len(intersection_poly) >= 3:
+                        # 确保内孔为逆时针方向（与外轮廓相反）
+                        if self._get_polygon_area(intersection_poly) > 0:
+                            intersection_poly = intersection_poly[::-1]  # 反转顶点顺序
+                        final_polygons.append(intersection_poly)
+
+        # 如果最终多边形列表为空，返回失败
+        if not final_polygons:
+            return False
+
+        # 创建实例
         new_instance = make_formal_instance(
             instance_id=self.current_plant_id,
-            polygons=self.current_plant_polygons,
+            polygons=final_polygons,
             class_names=self.class_names,
-            class_id=0,
+            class_id=0,  # 暂时默认为0，后续可以从UI选择
             source="manual",
+            owner_plant_id=self.next_owner_plant_id,
         )
+
+        # 保存实例
         self.plants.append(new_instance)
         saved_id = self.current_plant_id
         self.current_plant_id += 1
 
-        self.current_points = []
+        # 清空当前暂存的多边形和去除区域
         self.current_plant_polygons = []
-        self.current_snap_point = None
-        self.select_entity("formal", saved_id)
+        self.removal_regions = []
+
+        # 通知主窗口更新
+        self._notify_annotation_changed()
         self.update_display()
+
         return saved_id
 
     def undo_last_action(self):
@@ -435,6 +513,15 @@ class ImageLabel(QLabel):
         if self.current_ignored_points:
             self.current_ignored_points.pop()
             self.current_snap_point = None
+            self.update_display()
+            return True
+        if self.current_removal_points:
+            self.current_removal_points.pop()
+            self.current_snap_point = None
+            self.update_display()
+            return True
+        if self.removal_regions:
+            self.removal_regions.pop()
             self.update_display()
             return True
         return False
@@ -477,6 +564,14 @@ class ImageLabel(QLabel):
                     self.current_ignored_points.append(image_pos)
                 else:
                     self.current_ignored_points = [image_pos]
+                self._notify_annotation_changed()
+                return
+
+            if self.removing_region:
+                if self.current_removal_points:
+                    self.current_removal_points.append(image_pos)
+                else:
+                    self.current_removal_points = [image_pos]
                 self._notify_annotation_changed()
                 return
 
@@ -676,6 +771,109 @@ class ImageLabel(QLabel):
                 return True
         return False
 
+    def _get_polygon_area(self, polygon):
+        """计算多边形的面积，用于判断顶点顺序。
+        面积为正表示逆时针，面积为负表示顺时针。"""
+        area = 0.0
+        n = len(polygon)
+        for i in range(n):
+            x1, y1 = polygon[i]
+            x2, y2 = polygon[(i + 1) % n]
+            area += (x1 * y2) - (x2 * y1)
+        return area / 2.0
+
+    def _polygon_intersection(self, poly1, poly2):
+        """计算两个多边形的交集。"""
+        try:
+            import cv2
+            import numpy as np
+            
+            # 确保多边形是闭合的
+            if poly1[0] != poly1[-1]:
+                poly1 = poly1 + [poly1[0]]
+            if poly2[0] != poly2[-1]:
+                poly2 = poly2 + [poly2[0]]
+            
+            # 转换为numpy数组
+            poly1_np = np.array(poly1, dtype=np.int32)
+            poly2_np = np.array(poly2, dtype=np.int32)
+            
+            # 创建一个足够大的画布
+            all_points = poly1 + poly2
+            x_coords = [p[0] for p in all_points]
+            y_coords = [p[1] for p in all_points]
+            min_x = min(x_coords)
+            max_x = max(x_coords)
+            min_y = min(y_coords)
+            max_y = max(y_coords)
+            
+            # 确保画布大小合理
+            width = max(1, int(max_x - min_x) + 10)
+            height = max(1, int(max_y - min_y) + 10)
+            
+            # 创建掩码
+            mask1 = np.zeros((height, width), dtype=np.uint8)
+            mask2 = np.zeros((height, width), dtype=np.uint8)
+            
+            # 调整多边形坐标到画布坐标系
+            poly1_adjusted = [(int(p[0] - min_x), int(p[1] - min_y)) for p in poly1]
+            poly2_adjusted = [(int(p[0] - min_x), int(p[1] - min_y)) for p in poly2]
+            
+            # 绘制多边形
+            cv2.fillPoly(mask1, [np.array(poly1_adjusted)], 255)
+            cv2.fillPoly(mask2, [np.array(poly2_adjusted)], 255)
+            
+            # 计算交集
+            intersection = cv2.bitwise_and(mask1, mask2)
+            
+            # 查找轮廓
+            contours, _ = cv2.findContours(intersection, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                return None
+            
+            # 取最大的轮廓
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # 转换回原始坐标系
+            intersection_poly = []
+            for point in largest_contour:
+                x = point[0][0] + min_x
+                y = point[0][1] + min_y
+                intersection_poly.append((float(x), float(y)))
+            
+            # 确保多边形是闭合的
+            if intersection_poly and intersection_poly[0] != intersection_poly[-1]:
+                intersection_poly.append(intersection_poly[0])
+            
+            return intersection_poly
+        except Exception as e:
+            print(f"_polygon_intersection error: {e}")
+            return None
+
+    def calculate_bbox_from_polygons(self, polygons):
+        """从多边形列表中计算边界框。"""
+        if not polygons:
+            return [0, 0, 0, 0]
+        
+        x_coords = []
+        y_coords = []
+        
+        for polygon in polygons:
+            for point in polygon:
+                x_coords.append(point[0])
+                y_coords.append(point[1])
+        
+        if not x_coords or not y_coords:
+            return [0, 0, 0, 0]
+        
+        x_min = min(x_coords)
+        y_min = min(y_coords)
+        x_max = max(x_coords)
+        y_max = max(y_coords)
+        
+        return [x_min, y_min, x_max - x_min, y_max - y_min]
+
     def calculate_snap_point(self, screen_pos):
         """计算边缘吸附点。"""
         if not self.edge_snap_enabled or self.edge_map is None or self.raw_pixmap is None or self.color_image is None:
@@ -745,6 +943,33 @@ class ImageLabel(QLabel):
             return screen_x, screen_y
         except Exception as error:
             print(f"image_to_screen error: {error}")
+            return None
+
+    def get_view_rect(self):
+        """获取当前视图区域在图像坐标系中的矩形。"""
+        if not self.raw_pixmap:
+            return None
+        try:
+            img_width = self.raw_pixmap.width()
+            img_height = self.raw_pixmap.height()
+            
+            # 计算视图中心在图像中的坐标
+            center_x = self.view_center_x
+            center_y = self.view_center_y
+            
+            # 计算视图区域的半宽和半高
+            view_half_width = (self.width() / 2) / self.scale_factor
+            view_half_height = (self.height() / 2) / self.scale_factor
+            
+            # 计算视图区域的边界
+            x1 = max(0, center_x - view_half_width)
+            y1 = max(0, center_y - view_half_height)
+            x2 = min(img_width, center_x + view_half_width)
+            y2 = min(img_height, center_y + view_half_height)
+            
+            return (x1, y1, x2, y2)
+        except Exception as error:
+            print(f"get_view_rect error: {error}")
             return None
 
     def perform_region_growing(self, seed_point):
@@ -861,6 +1086,15 @@ class ImageLabel(QLabel):
                 self._draw_current_preview(painter, img_to_screen)
                 self._draw_snap_point(painter, img_to_screen)
 
+            # 绘制投影框
+            if hasattr(self, 'projection_rect') and self.projection_rect:
+                x1, y1, x2, y2 = self.projection_rect
+                qpt1 = img_to_screen((x1, y1))
+                qpt2 = img_to_screen((x2, y2))
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(0, 0, 255), 2, Qt.DashLine))
+                painter.drawRect(qpt1.x(), qpt1.y(), qpt2.x() - qpt1.x(), qpt2.y() - qpt1.y())
+
             painter.end()
             self.setPixmap(final_pixmap)
         except Exception as error:
@@ -873,18 +1107,40 @@ class ImageLabel(QLabel):
             plant_color = QColor(*plant.get("color", get_plant_color(int(plant.get("id", 0)))))
             is_selected = self.selected_entity_kind == "formal" and int(self.selected_entity_id or 0) == int(plant.get("id", 0))
 
-            for polygon in plant.get("polygons", []):
-                if len(polygon) < 3:
-                    continue
-                qpts = [img_to_screen(point) for point in polygon]
-                if summary_mode:
-                    painter.setBrush(QBrush(plant_color))
-                    painter.setPen(QPen(QColor(255, 0, 0), 3) if is_selected else QPen(QColor(0, 0, 0), 1))
-                else:
-                    weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), 55)
-                    painter.setBrush(QBrush(weak_color))
-                    painter.setPen(QPen(QColor(255, 80, 80), 3) if is_selected else QPen(QColor(100, 100, 100), 1))
-                painter.drawPolygon(*qpts)
+            polygons = plant.get("polygons", [])
+            if polygons:
+                # 创建临时QPixmap用于绘制填充和去除区域
+                temp_pixmap = QPixmap(self.size())
+                temp_pixmap.fill(Qt.transparent)
+                temp_painter = QPainter(temp_pixmap)
+                temp_painter.setRenderHint(QPainter.Antialiasing)
+                
+                # 绘制外轮廓（第一个多边形）
+                if len(polygons[0]) >= 3:
+                    qpts = [img_to_screen(point) for point in polygons[0]]
+                    if summary_mode:
+                        temp_painter.setBrush(QBrush(plant_color))
+                        temp_painter.setPen(QPen(QColor(255, 0, 0), 3) if is_selected else QPen(QColor(0, 0, 0), 1))
+                    else:
+                        weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), 55)
+                        temp_painter.setBrush(QBrush(weak_color))
+                        temp_painter.setPen(QPen(QColor(255, 80, 80), 3) if is_selected else QPen(QColor(100, 100, 100), 1))
+                    temp_painter.drawPolygon(*qpts)
+                
+                # 绘制内孔（后续多边形）
+                for i in range(1, len(polygons)):
+                    polygon = polygons[i]
+                    if len(polygon) >= 3:
+                        qpts = [img_to_screen(point) for point in polygon]
+                        # 使用组合模式实现挖空
+                        temp_painter.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+                        temp_painter.setBrush(QBrush(QColor(255, 255, 255, 255)))
+                        temp_painter.setPen(QPen(QColor(255, 255, 255, 255), 2))
+                        temp_painter.drawPolygon(*qpts)
+                
+                temp_painter.end()
+                # 将临时pixmap绘制到主画布
+                painter.drawPixmap(0, 0, temp_pixmap)
 
             if not summary_mode and is_selected:
                 self._draw_polygon_vertices(painter, img_to_screen, plant.get("polygons", []), QColor(255, 60, 60))
@@ -909,14 +1165,39 @@ class ImageLabel(QLabel):
 
     def _draw_current_preview(self, painter, img_to_screen):
         """绘制当前手工绘制中的预览层。"""
-        if self.current_plant_polygons:
-            temp_color = QColor(100, 200, 100, 120)
-            painter.setBrush(QBrush(temp_color))
-            painter.setPen(QPen(QColor(0, 150, 0), 2))
-            for polygon in self.current_plant_polygons:
-                if len(polygon) >= 3:
-                    painter.drawPolygon(*[img_to_screen(point) for point in polygon])
+        # 创建临时QPixmap用于绘制填充和去除区域
+        if self.current_plant_polygons or self.removal_regions:
+            temp_pixmap = QPixmap(self.size())
+            temp_pixmap.fill(Qt.transparent)
+            temp_painter = QPainter(temp_pixmap)
+            temp_painter.setRenderHint(QPainter.Antialiasing)
+            
+            # 绘制主多边形（填充区域）
+            if self.current_plant_polygons:
+                temp_color = QColor(100, 200, 100, 120)
+                temp_painter.setBrush(QBrush(temp_color))
+                temp_painter.setPen(QPen(QColor(0, 150, 0), 2))
+                for polygon in self.current_plant_polygons:
+                    if len(polygon) >= 3:
+                        qpts = [img_to_screen(point) for point in polygon]
+                        temp_painter.drawPolygon(*qpts)
+            
+            # 绘制去除区域（挖空效果）
+            if self.removal_regions:
+                for region in self.removal_regions:
+                    if len(region) >= 3:
+                        qpts = [img_to_screen(point) for point in region]
+                        # 使用组合模式实现挖空
+                        temp_painter.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+                        temp_painter.setBrush(QBrush(QColor(255, 255, 255, 255)))
+                        temp_painter.setPen(QPen(QColor(255, 255, 255, 255), 2))
+                        temp_painter.drawPolygon(*qpts)
+            
+            temp_painter.end()
+            # 将临时pixmap绘制到主画布
+            painter.drawPixmap(0, 0, temp_pixmap)
 
+        # 绘制当前正在绘制的点
         if self.current_points:
             qpts = [img_to_screen(point) for point in self.current_points]
             painter.setBrush(Qt.NoBrush)
@@ -937,17 +1218,34 @@ class ImageLabel(QLabel):
         if self.current_ignored_points:
             qpts = [img_to_screen(point) for point in self.current_ignored_points]
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor(128, 128, 128), 2))
+            painter.setPen(QPen(QColor(0, 0, 0), 2))
             for point in qpts:
                 painter.drawEllipse(point, 4, 4)
 
             if len(qpts) > 1:
-                painter.setPen(QPen(QColor(128, 128, 128), 2))
+                painter.setPen(QPen(QColor(0, 0, 0), 2))
                 for index in range(len(qpts) - 1):
                     painter.drawLine(qpts[index], qpts[index + 1])
 
             if self.underMouse() and self.last_mouse_pos:
-                painter.setPen(QPen(QColor(128, 128, 128), 2, Qt.DashLine))
+                painter.setPen(QPen(QColor(0, 0, 0), 2, Qt.DashLine))
+                painter.drawLine(qpts[-1], self.last_mouse_pos)
+
+        # 绘制当前正在绘制的去除区域
+        if self.current_removal_points:
+            qpts = [img_to_screen(point) for point in self.current_removal_points]
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(255, 0, 0), 2))
+            for point in qpts:
+                painter.drawEllipse(point, 4, 4)
+
+            if len(qpts) > 1:
+                painter.setPen(QPen(QColor(255, 0, 0), 2))
+                for index in range(len(qpts) - 1):
+                    painter.drawLine(qpts[index], qpts[index + 1])
+
+            if self.underMouse() and self.last_mouse_pos:
+                painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.DashLine))
                 painter.drawLine(qpts[-1], self.last_mouse_pos)
 
     def _draw_snap_point(self, painter, img_to_screen):
@@ -962,13 +1260,24 @@ class ImageLabel(QLabel):
             painter.drawEllipse(snap_screen, 3, 3)
 
     def _draw_polygon_vertices(self, painter, img_to_screen, polygons, color):
-        """绘制选中对象的顶点。"""
+        """绘制选中对象的顶点和连线。"""
         painter.setBrush(QBrush(color))
         painter.setPen(QPen(QColor(255, 255, 255), 1))
         for polygon in polygons or []:
             limit = len(polygon) - 1 if polygon and polygon[0] == polygon[-1] else len(polygon)
+            # 绘制顶点
             for index in range(limit):
                 painter.drawEllipse(img_to_screen(polygon[index]), 4, 4)
+            # 绘制连线
+            if limit > 1:
+                painter.setPen(QPen(color, 2))
+                for index in range(limit - 1):
+                    painter.drawLine(img_to_screen(polygon[index]), img_to_screen(polygon[index + 1]))
+                # 闭合多边形
+                if polygon and polygon[0] == polygon[-1]:
+                    painter.drawLine(img_to_screen(polygon[-2]), img_to_screen(polygon[0]))
+                else:
+                    painter.drawLine(img_to_screen(polygon[-1]), img_to_screen(polygon[0]))
 
     def _notify_selection_changed(self):
         main_win = self.get_main_window()

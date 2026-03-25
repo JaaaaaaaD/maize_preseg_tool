@@ -78,6 +78,10 @@ class Toolbars:
         parent.btn_toggle_snap.clicked.connect(parent.toggle_edge_snap)
         aux_func_layout.addWidget(parent.btn_toggle_snap)
 
+        parent.btn_toggle_projection = QPushButton("投影框: 关闭")
+        parent.btn_toggle_projection.clicked.connect(parent.toggle_projection)
+        aux_func_layout.addWidget(parent.btn_toggle_projection)
+
         parent.btn_region_growing = QPushButton(f"膨胀点选 ({SHORTCUTS['TOGGLE_REGION_GROWING']})")
         parent.btn_region_growing.clicked.connect(parent.toggle_region_growing)
         aux_func_layout.addWidget(parent.btn_region_growing)
@@ -85,6 +89,10 @@ class Toolbars:
         parent.btn_ignore_region = QPushButton(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
         parent.btn_ignore_region.clicked.connect(parent.toggle_ignore_region)
         aux_func_layout.addWidget(parent.btn_ignore_region)
+
+        parent.btn_removal_region = QPushButton("去除区域 (R)")
+        parent.btn_removal_region.clicked.connect(parent.toggle_removal_region)
+        aux_func_layout.addWidget(parent.btn_removal_region)
 
         parent.btn_clear_last_ignore = QPushButton("清除上一个忽略区域")
         parent.btn_clear_last_ignore.clicked.connect(parent.clear_last_ignore_region)

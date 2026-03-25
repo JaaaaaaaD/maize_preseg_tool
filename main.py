@@ -448,6 +448,14 @@ class MainWindow(QMainWindow):
             self.refresh_properties_panel()
             return False
 
+        # 如果AI辅助已关闭，不执行预标注
+        ai_assist_enabled = getattr(self, 'ai_assist_enabled', True)
+        if not ai_assist_enabled and not manual:
+            self.training_status_text = "AI辅助已关闭，未执行预标注"
+            self.refresh_properties_panel()
+            self.update_status_bar()
+            return False
+
         if not self.training_manager.has_active_model():
             self.training_status_text = "暂无模型，无法预标注"
             self.refresh_properties_panel()
@@ -763,11 +771,29 @@ class MainWindow(QMainWindow):
         if self.ignoring_region:
             self.btn_ignore_region.setText(f"退出忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
             self.left_label.ignoring_region = True
+            self.left_label.removing_region = False
             self.left_label.region_growing_enabled = False
             self.left_label.current_ignored_points = []
         else:
             self.btn_ignore_region.setText(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
             self.left_label.ignoring_region = False
+
+    def toggle_removal_region(self):
+        """切换去除区域绘制模式。"""
+        if not self.current_image:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+
+        # 切换去除区域模式
+        self.left_label.removing_region = not self.left_label.removing_region
+        if self.left_label.removing_region:
+            self.btn_removal_region.setText("退出去除区域 (R)")
+            self.left_label.ignoring_region = False
+            self.left_label.region_growing_enabled = False
+            self.left_label.current_removal_points = []
+        else:
+            self.btn_removal_region.setText("去除区域 (R)")
+            self.left_label.removing_region = False
 
     def toggle_ai_assist(self):
         """切换AI辅助功能。"""
@@ -779,6 +805,16 @@ class MainWindow(QMainWindow):
             self.btn_toggle_ai.setText("AI辅助: 关闭")
             # 禁用AI辅助相关功能
         self.left_label.update_display()
+        self.update_status_bar()
+
+    def toggle_projection(self):
+        """切换投影框显示。"""
+        self.projection_enabled = not getattr(self, 'projection_enabled', False)
+        if self.projection_enabled:
+            self.btn_toggle_projection.setText("投影框: 开启")
+        else:
+            self.btn_toggle_projection.setText("投影框: 关闭")
+        self.sync_summary_view()
         self.update_status_bar()
 
     def clear_last_ignore_region(self):
@@ -805,6 +841,10 @@ class MainWindow(QMainWindow):
     def save_current_polygon(self):
         if self.ignoring_region:
             if self.left_label.save_current_ignored_region():
+                self.mark_annotation_changed()
+                self.update_status_bar()
+        elif self.left_label.removing_region:
+            if self.left_label.save_current_removal_region():
                 self.mark_annotation_changed()
                 self.update_status_bar()
         else:
@@ -1222,6 +1262,18 @@ class MainWindow(QMainWindow):
             next_owner_plant_id=self.left_label.next_owner_plant_id,
         )
         self.right_label.ignored_regions = ignored_regions
+        
+        # 同步投影框信息
+        if hasattr(self, 'projection_enabled') and self.projection_enabled:
+            # 获取左侧画布的当前视图区域
+            left_view_rect = getattr(self.left_label, 'get_view_rect', lambda: None)()
+            if left_view_rect:
+                self.right_label.projection_rect = left_view_rect
+            else:
+                self.right_label.projection_rect = None
+        else:
+            self.right_label.projection_rect = None
+        
         self.right_label.update_display()
 
     def update_status_bar(self):
