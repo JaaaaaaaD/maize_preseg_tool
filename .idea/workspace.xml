@@ -6,13 +6,69 @@
   <component name="ChangeListManager">
     <list default="true" id="ad5fdf9b-9280-4088-9aeb-3cbe9bb8c68c" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/components/help_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/components/help_dialog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/components/image_label.py" beforeDir="false" afterPath="$PROJECT_DIR$/components/image_label.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/components/toolbars.py" beforeDir="false" afterPath="$PROJECT_DIR$/components/toolbars.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162729_3069_31 - 副本.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162729_3069_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162733_3070_31 - 副本.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162733_3070_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162739_3072_31 - 副本.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162739_3072_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162743_3073_31 - 副本.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162743_3073_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162747_3074_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162751_3075_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162754_3076_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162759_3077_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162806_3078_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162810_3079_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162817_3080_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162823_3081_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162828_3082_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162834_3083_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162838_3085_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162844_3086_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162850_3087_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162857_3088_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162902_3090_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162908_3091_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162912_3092_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162916_3093_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162921_3094_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162928_3095_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162933_3096_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162937_3097_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162942_3098_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162947_3099_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162951_3100_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162955_3101_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322162958_3102_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163001_3103_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163003_3104_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163006_3105_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163009_3106_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163012_3107_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163157_3110_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163201_3112_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163208_3113_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163215_3114_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163221_3115_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163226_3116_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163233_3117_31.jpg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/images_raw/微信图片_20260322163242_3118_31.jpg" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/inference_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/inference_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 103558.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 103610.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 103642.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 103648.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 103658.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 103709.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/屏幕截图 2026-03-24 122214.png" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/utils/data_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/data_manager.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/utils/dataset_builder.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/dataset_builder.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/project_context.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/project_context.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/使用说明.md" beforeDir="false" afterPath="$PROJECT_DIR$/使用说明.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -38,18 +94,19 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;Python.help_dialog.executor&quot;: &quot;Run&quot;,
-    &quot;Python.image_label.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main.executor&quot;: &quot;Run&quot;,
-    &quot;Python.original_main.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Python.help_dialog.executor": "Run",
+    "Python.image_label.executor": "Run",
+    "Python.main.executor": "Run",
+    "Python.namer.executor": "Run",
+    "Python.original_main.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "master",
+    "settings.editor.selected.configurable": "preferences.pluginManager"
   }
-}</component>
-  <component name="RunManager">
+}]]></component>
+  <component name="RunManager" selected="Python.namer">
     <configuration name="main" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="maize_preseg_tool" />
       <option name="ENV_FILES" value="" />
@@ -72,8 +129,31 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="namer" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="maize_preseg_tool" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/namer.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.namer" />
         <item itemvalue="Python.main" />
       </list>
     </recent_temporary>

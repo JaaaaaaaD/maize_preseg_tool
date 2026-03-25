@@ -37,9 +37,7 @@ COLOR_CHANGE_THRESHOLD = 15  # 颜色变化阈值
 ROI_SIZE = 8  # ROI区域大小
 
 # 路径配置
-BASE_WORK_DIR = "./maize_annotations"
-ANNOTATION_DIR = os.path.join(BASE_WORK_DIR, "projects")  # 单图标注保存目录
-PROJECTS_ROOT = os.path.join(BASE_WORK_DIR, "project_state")  # 项目根目录
+# 移除maize_annotations相关配置，使用临时目录或用户指定目录
 
 # 项目级配置
 DEFAULT_CLASS_NAMES = ["plant", "stem", "leaf", "ear"]

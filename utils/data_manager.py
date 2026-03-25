@@ -4,7 +4,7 @@ import os
 import shutil
 from datetime import datetime
 
-from config import ANNOTATION_DIR, DEFAULT_CLASS_NAMES, VERSION
+from config import DEFAULT_CLASS_NAMES, VERSION
 from utils.annotation_schema import (
     compute_annotation_hash,
     ensure_plant_groups,
@@ -37,7 +37,8 @@ def get_auto_save_path(image_path):
         return None
     image_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
     path_hash = abs(hash(os.path.abspath(image_path))) % 10000
-    return os.path.join(ANNOTATION_DIR, f"{image_name}_{path_hash}.maize")
+    # 使用当前工作目录作为默认保存位置
+    return os.path.join(os.getcwd(), f"{image_name}_{path_hash}.maize")
 
 
 def _build_project_payload(
@@ -59,8 +60,12 @@ def _build_project_payload(
     normalized_state = normalize_image_state(image_path, image_state)
     normalized_groups = ensure_plant_groups(normalized_plants, plant_groups or [])
 
+    # 提取图片名称（不包含路径）
+    image_name = os.path.basename(image_path)
+    
     return {
         "image_path": image_path,
+        "image_name": image_name,
         "project_id": project_id,
         "class_names": class_names,
         "plants": normalized_plants,
@@ -92,7 +97,8 @@ def save_current_annotation(
         return False, None, None
 
     try:
-        os.makedirs(ANNOTATION_DIR, exist_ok=True)
+        # 确保保存目录存在（使用当前工作目录）
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         payload = _build_project_payload(
             image_path,
             plants,
@@ -180,7 +186,8 @@ def export_simple_json(image_path, plants, plant_groups=None, image_state=None, 
         
         if not export_path:
             base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-            export_dir = ANNOTATION_DIR
+            # 使用当前工作目录作为默认导出目录
+            export_dir = os.getcwd()
             export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
         else:
             export_dir = os.path.dirname(export_path)
@@ -216,6 +223,12 @@ def export_coco_format(
     class_names = list(class_names or DEFAULT_CLASS_NAMES)
 
     try:
+        # 提取图片名称（不包含路径）
+        image_name = os.path.basename(image_path)
+        
+        # 生成唯一的图片ID（基于图片路径的哈希值）
+        image_id = abs(hash(image_path)) % 1000000
+        
         coco_data = {
             "info": {
                 "description": "Maize Plant Multi-Class Instance Segmentation Dataset",
@@ -227,8 +240,9 @@ def export_coco_format(
             "licenses": [],
             "images": [
                 {
-                    "id": 1,
-                    "file_name": os.path.basename(image_path),
+                    "id": image_id,
+                    "file_name": image_name,
+                    "image_name": image_name,  # 添加图片名称字段
                     "width": image_width,
                     "height": image_height,
                     "date_captured": "",
@@ -275,7 +289,7 @@ def export_coco_format(
             coco_data["annotations"].append(
                 {
                     "id": annotation_id,
-                    "image_id": 1,
+                    "image_id": image_id,
                     "category_id": int(plant.get("class_id", 0)) + 1,
                     "segmentation": segmentation,
                     "area": float(total_area),
@@ -318,7 +332,8 @@ def export_coco_format(
 
         if not export_path:
             base_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
-            export_dir = ANNOTATION_DIR
+            # 使用当前工作目录作为默认导出目录
+            export_dir = os.getcwd()
             export_path = os.path.join(export_dir, f"{base_name}_coco.json")
         else:
             export_dir = os.path.dirname(export_path)
@@ -341,7 +356,8 @@ def export_completed_annotations(project_id, export_dir=None):
         return None, 0
 
     try:
-        export_dir = export_dir or os.path.join(ANNOTATION_DIR, f"completed_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        # 使用当前工作目录作为默认导出目录
+        export_dir = export_dir or os.path.join(os.getcwd(), f"completed_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(export_dir, exist_ok=True)
         exported_count = 0
 
@@ -349,13 +365,16 @@ def export_completed_annotations(project_id, export_dir=None):
             annotation = load_annotation_file(record.get("annotation_file"))
             if not annotation:
                 continue
+            base_name = _safe_file_stem(os.path.splitext(os.path.basename(annotation["image_path"]))[0])
+            export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
             json_path = export_simple_json(
                 annotation["image_path"],
                 annotation["plants"],
                 plant_groups=annotation.get("plant_groups"),
                 image_state=annotation.get("image_state"),
-                export_dir=export_dir,
+                export_path=export_path,
                 class_names=annotation.get("class_names"),
+                ignored_regions=annotation.get("ignored_regions"),
             )
             if json_path:
                 exported_count += 1
@@ -382,13 +401,16 @@ def copy_completed_annotations_to_dir(project_id, export_dir):
             annotation = load_annotation_file(annotation_file)
             if not annotation:
                 continue
+            base_name = _safe_file_stem(os.path.splitext(os.path.basename(annotation["image_path"]))[0])
+            export_path = os.path.join(export_dir, f"{base_name}_annotation.json")
             json_path = export_simple_json(
                 annotation["image_path"],
                 annotation["plants"],
                 plant_groups=annotation.get("plant_groups"),
                 image_state=annotation.get("image_state"),
-                export_dir=export_dir,
+                export_path=export_path,
                 class_names=annotation.get("class_names"),
+                ignored_regions=annotation.get("ignored_regions"),
             )
             if json_path:
                 exported_count += 1

@@ -158,81 +158,91 @@ def _write_data_yaml(data_yaml_path, dataset_root, class_names, has_ignored_regi
 
 def build_project_dataset(project_id, rebuild_split=False, dataset_root=None):
     """从已完成正式标注构建项目训练集。"""
-    completed_records = get_completed_records(project_id)
-    if dataset_root is None:
-        paths = get_project_paths(project_id)
-        dataset_root = paths["dataset_root"]
-    os.makedirs(dataset_root, exist_ok=True)
+    try:
+        completed_records = get_completed_records(project_id)
+        if dataset_root is None:
+            paths = get_project_paths(project_id)
+            dataset_root = paths["dataset_root"]
+        os.makedirs(dataset_root, exist_ok=True)
 
-    if not completed_records:
-        raise RuntimeError("当前项目没有已完成图片，无法构建训练集")
+        if not completed_records:
+            raise RuntimeError("当前项目没有已完成图片，无法构建训练集")
 
-    manifest, val_paths = _resolve_val_manifest(project_id, completed_records, rebuild_split=rebuild_split)
-    _reset_dataset_dirs(dataset_root)
+        manifest, val_paths = _resolve_val_manifest(project_id, completed_records, rebuild_split=rebuild_split)
+        _reset_dataset_dirs(dataset_root)
 
-    data_yaml_path = os.path.join(dataset_root, "data.yaml")
-    snapshot_hashes = {}
-    export_index = []
-    class_names = None
-    train_count = 0
-    val_count = 0
-    has_ignored_regions = False
+        data_yaml_path = os.path.join(dataset_root, "data.yaml")
+        snapshot_hashes = {}
+        export_index = []
+        class_names = None
+        train_count = 0
+        val_count = 0
+        has_ignored_regions = False
 
-    for record in completed_records:
-        annotation = load_annotation_file(record.get("annotation_file"))
-        if not annotation:
-            continue
+        for record in completed_records:
+            try:
+                annotation = load_annotation_file(record.get("annotation_file"))
+                if not annotation:
+                    continue
 
-        image_path = annotation["image_path"]
-        if not os.path.exists(image_path):
-            continue
+                image_path = annotation["image_path"]
+                if not os.path.exists(image_path):
+                    continue
 
-        class_names = list(annotation.get("class_names") or DEFAULT_CLASS_NAMES)
-        split = "val" if _normalize_image_path(image_path) in val_paths else "train"
-        train_count += 1 if split == "train" else 0
-        val_count += 1 if split == "val" else 0
+                class_names = list(annotation.get("class_names") or DEFAULT_CLASS_NAMES)
+                split = "val" if _normalize_image_path(image_path) in val_paths else "train"
+                train_count += 1 if split == "train" else 0
+                val_count += 1 if split == "val" else 0
 
-        snapshot_hashes[image_path] = record.get("annotation_hash")
-        stem = _stable_dataset_stem(image_path)
-        image_ext = os.path.splitext(image_path)[1] or ".jpg"
-        target_image_path = os.path.join(dataset_root, "images", split, f"{stem}{image_ext}")
-        target_label_path = os.path.join(dataset_root, "labels", split, f"{stem}.txt")
+                snapshot_hashes[image_path] = record.get("annotation_hash")
+                stem = _stable_dataset_stem(image_path)
+                image_ext = os.path.splitext(image_path)[1] or ".jpg"
+                target_image_path = os.path.join(dataset_root, "images", split, f"{stem}{image_ext}")
+                target_label_path = os.path.join(dataset_root, "labels", split, f"{stem}.txt")
 
-        shutil.copy2(image_path, target_image_path)
-        from PIL import Image as PILImage
+                shutil.copy2(image_path, target_image_path)
+                from PIL import Image as PILImage
 
-        with PILImage.open(image_path) as image:
-            width, height = image.size
+                with PILImage.open(image_path) as image:
+                    width, height = image.size
 
-        # 获取忽略区域
-        ignored_regions = annotation.get("ignored_regions", [])
-        if ignored_regions:
-            has_ignored_regions = True
+                # 获取忽略区域
+                ignored_regions = annotation.get("ignored_regions", [])
+                if ignored_regions:
+                    has_ignored_regions = True
 
-        _write_yolo_label(target_label_path, annotation["plants"], width, height, class_names, ignored_regions)
+                _write_yolo_label(target_label_path, annotation["plants"], width, height, class_names, ignored_regions)
 
-        export_index.append(
-            {
-                "image_path": image_path,
-                "split": split,
-                "copied_image_path": target_image_path,
-                "label_path": target_label_path,
-                "annotation_file": record.get("annotation_file"),
-            }
-        )
+                export_index.append(
+                    {
+                        "image_path": image_path,
+                        "split": split,
+                        "copied_image_path": target_image_path,
+                        "label_path": target_label_path,
+                        "annotation_file": record.get("annotation_file"),
+                    }
+                )
+            except Exception as error:
+                # 单个记录处理失败，跳过继续处理其他记录
+                continue
 
-    class_names = list(class_names or DEFAULT_CLASS_NAMES)
-    _write_data_yaml(data_yaml_path, dataset_root, class_names, has_ignored_regions)
+        if not export_index:
+            raise RuntimeError("没有成功处理的标注记录，无法构建训练集")
 
-    return {
-        "project_id": project_id,
-        "dataset_root": dataset_root,
-        "data_yaml_path": data_yaml_path,
-        "completed_count": len(export_index),
-        "train_count": train_count,
-        "val_count": val_count,
-        "snapshot_hashes": snapshot_hashes,
-        "class_names": class_names,
-        "split_manifest": manifest,
-        "export_index": export_index,
-    }
+        class_names = list(class_names or DEFAULT_CLASS_NAMES)
+        _write_data_yaml(data_yaml_path, dataset_root, class_names, has_ignored_regions)
+
+        return {
+            "project_id": project_id,
+            "dataset_root": dataset_root,
+            "data_yaml_path": data_yaml_path,
+            "completed_count": len(export_index),
+            "train_count": train_count,
+            "val_count": val_count,
+            "snapshot_hashes": snapshot_hashes,
+            "class_names": class_names,
+            "split_manifest": manifest,
+            "export_index": export_index,
+        }
+    except Exception as error:
+        raise RuntimeError(f"构建 YOLO 数据集失败: {error}") from error

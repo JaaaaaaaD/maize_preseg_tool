@@ -3,6 +3,7 @@ import copy
 import os
 import sys
 import traceback
+import json
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QKeySequence, QPalette
@@ -21,7 +22,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from config import ANNOTATION_DIR, SHORTCUTS
+from config import SHORTCUTS
 from components.help_dialog import HelpDialog
 from components.image_label import ImageLabel
 from components.toolbars import Toolbars
@@ -65,7 +66,8 @@ class MainWindow(QMainWindow):
         self.current_image_state = make_image_state("")
         self.current_annotation_hash = None
 
-        self.annotation_dir = ANNOTATION_DIR
+        # 使用当前工作目录作为标注保存目录
+        self.annotation_dir = os.getcwd()
         self.preprocess_cache = {}
         self.annotation_changed = False
         self.undo_stack = []
@@ -96,7 +98,6 @@ class MainWindow(QMainWindow):
         self.restore_button_texts()
         self.restore_button_visuals()
 
-        os.makedirs(self.annotation_dir, exist_ok=True)
         self.update_status_bar()
 
     def init_ui(self):
@@ -1080,7 +1081,8 @@ class MainWindow(QMainWindow):
             return
         
         # 让用户选择导出目录
-        default_dir = os.path.join(ANNOTATION_DIR, f"yolo_dataset_{current_timestamp()}")
+        # 使用当前工作目录作为默认导出目录
+        default_dir = os.path.join(os.getcwd(), f"yolo_dataset_{current_timestamp()}")
         export_dir = QFileDialog.getExistingDirectory(
             self, "选择 YOLO 数据集导出目录", default_dir
         )
@@ -1105,7 +1107,8 @@ class MainWindow(QMainWindow):
             return
         
         # 让用户选择导出目录
-        default_dir = os.path.join(ANNOTATION_DIR, f"completed_export_{current_timestamp()}")
+        # 使用当前工作目录作为默认导出目录
+        default_dir = os.path.join(os.getcwd(), f"completed_export_{current_timestamp()}")
         export_dir = QFileDialog.getExistingDirectory(
             self, "选择导出目录", default_dir
         )
@@ -1119,6 +1122,288 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "成功", f"已完成图片 JSON 导出 {exported_count} 份到：{export_result}")
         else:
             QMessageBox.warning(self, "警告", "当前项目没有已完成图片")
+
+    def import_coco_data(self):
+        """导入 COCO 格式数据到当前项目"""
+        if not self.project_id:
+            QMessageBox.warning(self, "警告", "当前没有活动项目")
+            return
+        
+        if not self.current_image_path:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+        
+        # 让用户选择 COCO 文件
+        coco_path, _ = QFileDialog.getOpenFileName(
+            self, "选择 COCO 文件", "", "JSON 文件 (*.json)"
+        )
+        
+        if not coco_path:
+            return  # 用户取消选择
+        
+        self._import_single_coco_data(coco_path)
+    
+    def _import_single_coco_data(self, coco_path):
+        """导入单个 COCO 文件"""
+        try:
+            # 解析 COCO 文件
+            with open(coco_path, "r", encoding="utf-8") as file:
+                coco_data = json.load(file)
+            
+            # 获取当前图片名称
+            current_image_name = os.path.basename(self.current_image_path)
+            
+            # 查找对应图片的标注
+            image_info = None
+            for img in coco_data.get("images", []):
+                if img.get("file_name") == current_image_name or img.get("image_name") == current_image_name:
+                    image_info = img
+                    break
+            
+            if not image_info:
+                QMessageBox.warning(self, "警告", f"未找到与当前图片 {current_image_name} 对应的 COCO 标注")
+                return
+            
+            # 提取标注
+            annotations = []
+            for ann in coco_data.get("annotations", []):
+                if ann.get("image_id") == image_info.get("id"):
+                    annotations.append(ann)
+            
+            if not annotations:
+                QMessageBox.information(self, "信息", f"当前图片 {current_image_name} 没有对应的标注")
+                return
+            
+            # 转换为平台内部格式
+            plants = []
+            for ann in annotations:
+                # 处理分割数据
+                segmentation = ann.get("segmentation", [])
+                polygons = []
+                
+                if isinstance(segmentation, list):
+                    for seg in segmentation:
+                        if len(seg) >= 6:
+                            # COCO 格式：[x1, y1, x2, y2, ...]
+                            polygon = []
+                            for i in range(0, len(seg), 2):
+                                polygon.append((seg[i], seg[i+1]))
+                            if len(polygon) >= 3:
+                                polygons.append(polygon)
+                
+                if not polygons:
+                    continue
+                
+                # 获取类别信息
+                class_id = ann.get("category_id", 0)
+                class_name = "unknown"
+                
+                # 查找类别名称
+                for cat in coco_data.get("categories", []):
+                    if cat.get("id") == class_id:
+                        class_name = cat.get("name", "unknown")
+                        break
+                
+                # 创建植物实例
+                plant = {
+                    "id": len(plants) + 1,
+                    "class_id": class_id - 1,  # 转换为从0开始的索引
+                    "class_name": class_name,
+                    "polygons": polygons,
+                    "bbox": ann.get("bbox", []),
+                    "area": ann.get("area", 0),
+                    "iscrowd": ann.get("iscrowd", 0)
+                }
+                plants.append(plant)
+            
+            # 处理忽略区域
+            ignored_regions = []
+            for region in coco_data.get("ignored_regions", []):
+                segmentation = region.get("segmentation", [])
+                if isinstance(segmentation, list):
+                    for seg in segmentation:
+                        if len(seg) >= 6:
+                            polygon = []
+                            for i in range(0, len(seg), 2):
+                                polygon.append((seg[i], seg[i+1]))
+                            if len(polygon) >= 3:
+                                ignored_regions.append(polygon)
+            
+            # 更新左侧标注区域
+            self.left_label.plants = plants
+            self.left_label.ignored_regions = ignored_regions
+            self.left_label.update_display()
+            
+            # 同步右侧全局概览
+            self.sync_summary_view()
+            
+            # 更新植株列表
+            self.update_plant_list()
+            
+            # 标记变化
+            self.mark_annotation_changed()
+            
+            # 更新状态栏
+            self.update_status_bar()
+            
+            QMessageBox.information(self, "成功", f"成功导入 COCO 数据，共导入 {len(plants)} 个实例")
+            
+        except Exception as error:
+            QMessageBox.critical(self, "错误", f"导入 COCO 数据失败: {error}")
+    
+    def import_batch_data(self):
+        """批量导入数据到当前项目"""
+        if not self.project_id:
+            QMessageBox.warning(self, "警告", "当前没有活动项目")
+            return
+        
+        if not self.image_paths:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+        
+        # 让用户选择导入目录
+        import_dir = QFileDialog.getExistingDirectory(
+            self, "选择导入目录", ""
+        )
+        
+        if not import_dir:
+            return  # 用户取消选择
+        
+        try:
+            # 遍历目录中的所有 JSON 文件
+            import_count = 0
+            skip_count = 0
+            error_count = 0
+            
+            for filename in os.listdir(import_dir):
+                if filename.endswith(".json"):
+                    coco_path = os.path.join(import_dir, filename)
+                    
+                    # 尝试导入每个 COCO 文件
+                    try:
+                        # 解析 COCO 文件
+                        with open(coco_path, "r", encoding="utf-8") as file:
+                            coco_data = json.load(file)
+                        
+                        # 遍历 COCO 文件中的所有图片
+                        for img_info in coco_data.get("images", []):
+                            image_name = img_info.get("file_name") or img_info.get("image_name")
+                            if not image_name:
+                                continue
+                            
+                            # 查找对应的图片路径
+                            target_image_path = None
+                            for img_path in self.image_paths:
+                                if os.path.basename(img_path) == image_name:
+                                    target_image_path = img_path
+                                    break
+                            
+                            if not target_image_path:
+                                skip_count += 1
+                                continue
+                            
+                            # 跳转到对应的图片
+                            image_index = self.image_paths.index(target_image_path)
+                            self.goto_image(image_index)
+                            
+                            # 提取标注
+                            annotations = []
+                            for ann in coco_data.get("annotations", []):
+                                if ann.get("image_id") == img_info.get("id"):
+                                    annotations.append(ann)
+                            
+                            if not annotations:
+                                skip_count += 1
+                                continue
+                            
+                            # 转换为平台内部格式
+                            plants = []
+                            for ann in annotations:
+                                # 处理分割数据
+                                segmentation = ann.get("segmentation", [])
+                                polygons = []
+                                
+                                if isinstance(segmentation, list):
+                                    for seg in segmentation:
+                                        if len(seg) >= 6:
+                                            # COCO 格式：[x1, y1, x2, y2, ...]
+                                            polygon = []
+                                            for i in range(0, len(seg), 2):
+                                                polygon.append((seg[i], seg[i+1]))
+                                            if len(polygon) >= 3:
+                                                polygons.append(polygon)
+                                
+                                if not polygons:
+                                    continue
+                                
+                                # 获取类别信息
+                                class_id = ann.get("category_id", 0)
+                                class_name = "unknown"
+                                
+                                # 查找类别名称
+                                for cat in coco_data.get("categories", []):
+                                    if cat.get("id") == class_id:
+                                        class_name = cat.get("name", "unknown")
+                                        break
+                                
+                                # 创建植物实例
+                                plant = {
+                                    "id": len(plants) + 1,
+                                    "class_id": class_id - 1,  # 转换为从0开始的索引
+                                    "class_name": class_name,
+                                    "polygons": polygons,
+                                    "bbox": ann.get("bbox", []),
+                                    "area": ann.get("area", 0),
+                                    "iscrowd": ann.get("iscrowd", 0)
+                                }
+                                plants.append(plant)
+                            
+                            # 处理忽略区域
+                            ignored_regions = []
+                            for region in coco_data.get("ignored_regions", []):
+                                segmentation = region.get("segmentation", [])
+                                if isinstance(segmentation, list):
+                                    for seg in segmentation:
+                                        if len(seg) >= 6:
+                                            polygon = []
+                                            for i in range(0, len(seg), 2):
+                                                polygon.append((seg[i], seg[i+1]))
+                                            if len(polygon) >= 3:
+                                                ignored_regions.append(polygon)
+                            
+                            # 更新左侧标注区域
+                            self.left_label.plants = plants
+                            self.left_label.ignored_regions = ignored_regions
+                            self.left_label.update_display()
+                            
+                            # 同步右侧全局概览
+                            self.sync_summary_view()
+                            
+                            # 更新植株列表
+                            self.update_plant_list()
+                            
+                            # 标记变化
+                            self.mark_annotation_changed()
+                            
+                            # 保存标注
+                            self.save_current_annotation_auto(force=True)
+                            
+                            import_count += 1
+                    except Exception as error:
+                        error_count += 1
+                        print(f"导入文件 {filename} 失败: {error}")
+            
+            # 显示导入结果
+            QMessageBox.information(
+                self, 
+                "批量导入完成", 
+                f"成功导入: {import_count} 个文件\n" 
+                f"跳过: {skip_count} 个文件（未找到对应图片）\n" 
+                f"失败: {error_count} 个文件（解析错误）"
+            )
+            
+        except Exception as error:
+            QMessageBox.critical(self, "错误", f"批量导入数据失败: {error}")
 
     def start_manual_training(self):
         success, message = self.training_manager.check_and_trigger_training(force=True)

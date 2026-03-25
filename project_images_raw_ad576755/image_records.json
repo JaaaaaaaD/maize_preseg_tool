@@ -1,0 +1,13 @@
+{
+  "E:\\PycharmProjects\\maize_preseg_tool\\images_raw\\微信图片_20260322162729_3069_31 - 副本.jpg": {
+    "image_path": "E:\\PycharmProjects\\maize_preseg_tool\\images_raw\\微信图片_20260322162729_3069_31 - 副本.jpg",
+    "image_name": "微信图片_20260322162729_3069_31 - 副本.jpg",
+    "annotation_file": "E:\\PycharmProjects\\maize_preseg_tool\\微信图片_20260322162729_3069_31 - 副本_489.maize",
+    "annotation_completed": false,
+    "last_modified_at": "2026-03-25 14:04:08",
+    "annotation_hash": "ffda4bd07780dd3c342699570d8e8f97fc8468c0",
+    "last_trained_seen_hash": null,
+    "dirty_since_last_train": false,
+    "project_id": "images_raw_ad576755"
+  }
+}

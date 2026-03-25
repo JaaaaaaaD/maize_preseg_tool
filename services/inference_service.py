@@ -56,51 +56,66 @@ class InferenceService:
         except ImportError as error:
             raise RuntimeError("未安装 ultralytics，无法执行预标注推理") from error
 
-        model = YOLO(model_path)
-        results = model.predict(
-            source=image_path,
-            conf=confidence_threshold,
-            verbose=False,
-            task="segment",
-        )
+        try:
+            model = YOLO(model_path)
+        except Exception as error:
+            raise RuntimeError(f"加载 YOLO 模型失败: {error}") from error
+
+        try:
+            results = model.predict(
+                source=image_path,
+                conf=confidence_threshold,
+                verbose=False,
+                task="segment",
+            )
+        except Exception as error:
+            raise RuntimeError(f"执行 YOLO 推理失败: {error}") from error
+
         if not results:
             return []
 
-        result = results[0]
-        if result.masks is None or result.boxes is None:
-            return []
+        try:
+            result = results[0]
+            if result.masks is None or result.boxes is None:
+                return []
 
-        boxes = result.boxes
-        masks = result.masks.data
-        candidates = []
-        max_count = min(len(masks), INFERENCE_MAX_CANDIDATES)
+            boxes = result.boxes
+            masks = result.masks.data
+            candidates = []
+            max_count = min(len(masks), INFERENCE_MAX_CANDIDATES)
 
-        for index in range(max_count):
-            confidence = float(boxes.conf[index].item()) if boxes.conf is not None else None
-            class_id = int(boxes.cls[index].item()) if boxes.cls is not None else 0
+            for index in range(max_count):
+                try:
+                    confidence = float(boxes.conf[index].item()) if boxes.conf is not None else None
+                    class_id = int(boxes.cls[index].item()) if boxes.cls is not None else 0
 
-            mask = masks[index].detach().cpu().numpy().astype(np.uint8) * 255
-            polygons = _mask_to_polygons(mask, epsilon_ratio)
-            polygons = [polygon for polygon in polygons if calculate_polygon_area(polygon) >= min_area]
-            if not polygons:
-                continue
+                    mask = masks[index].detach().cpu().numpy().astype(np.uint8) * 255
+                    polygons = _mask_to_polygons(mask, epsilon_ratio)
+                    polygons = [polygon for polygon in polygons if calculate_polygon_area(polygon) >= min_area]
+                    if not polygons:
+                        continue
 
-            total_area = sum(calculate_polygon_area(polygon) for polygon in polygons)
-            if total_area < min_area:
-                continue
+                    total_area = sum(calculate_polygon_area(polygon) for polygon in polygons)
+                    if total_area < min_area:
+                        continue
 
-            candidates.append(
-                make_candidate_instance(
-                    candidate_id=f"cand_{index + 1:04d}",
-                    polygons=polygons,
-                    class_names=class_names,
-                    class_id=class_id,
-                    confidence=confidence,
-                    model_version=None,
-                )
-            )
+                    candidates.append(
+                        make_candidate_instance(
+                            candidate_id=f"cand_{index + 1:04d}",
+                            polygons=polygons,
+                            class_names=class_names,
+                            class_id=class_id,
+                            confidence=confidence,
+                            model_version=None,
+                        )
+                    )
+                except Exception as error:
+                    # 单个实例处理失败，跳过继续处理其他实例
+                    continue
 
-        return candidates
+            return candidates
+        except Exception as error:
+            raise RuntimeError(f"处理 YOLO 推理结果失败: {error}") from error
 
 
 class InferenceWorker(QThread):

@@ -8,7 +8,6 @@ from config import (
     FIXED_VAL_MIN_COUNT,
     FIXED_VAL_RATIO,
     FIXED_VAL_SEED,
-    PROJECTS_ROOT,
     AUTO_TRAIN_THRESHOLD,
 )
 from utils.annotation_schema import current_timestamp
@@ -49,7 +48,8 @@ def build_project_id(source_root):
 
 def get_project_paths(project_id):
     """返回项目关键路径。"""
-    project_root = os.path.join(PROJECTS_ROOT, project_id)
+    # 使用当前工作目录作为项目根目录
+    project_root = os.path.join(os.getcwd(), f"project_{project_id}")
     return {
         "project_root": project_root,
         "metadata_path": os.path.join(project_root, "project_metadata.json"),
@@ -66,7 +66,7 @@ def get_project_paths(project_id):
 
 def _ensure_project_layout(paths):
     """创建项目目录结构。"""
-    os.makedirs(PROJECTS_ROOT, exist_ok=True)
+    # 不再创建PROJECTS_ROOT目录，直接创建项目相关目录
     os.makedirs(paths["project_root"], exist_ok=True)
     os.makedirs(paths["models_root"], exist_ok=True)
     os.makedirs(paths["model_versions_root"], exist_ok=True)

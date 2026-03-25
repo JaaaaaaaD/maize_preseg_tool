@@ -30,6 +30,10 @@ class Toolbars:
         nav_layout = QVBoxLayout()
         nav_group.setLayout(nav_layout)
 
+        parent.btn_toggle_annotation = QPushButton("标记当前图片为已完成")
+        parent.btn_toggle_annotation.clicked.connect(parent.toggle_annotation_status)
+        nav_layout.addWidget(parent.btn_toggle_annotation)
+
         parent.btn_prev = QPushButton(f"上一张 ({SHORTCUTS['PREV_IMAGE']})")
         parent.btn_prev.clicked.connect(parent.prev_image)
         parent.btn_prev.setEnabled(False)
@@ -113,11 +117,21 @@ class Toolbars:
     
     @staticmethod
     def create_export_toolbar(parent):
-        """创建导出工具栏"""
-        export_group = QGroupBox("导出")
+        """创建导入/导出工具栏"""
+        export_group = QGroupBox("导入/导出")
         export_layout = QVBoxLayout()
         export_group.setLayout(export_layout)
 
+        # 导入按钮组
+        parent.btn_import_coco = QPushButton("导入 COCO 数据")
+        parent.btn_import_coco.clicked.connect(parent.import_coco_data)
+        export_layout.addWidget(parent.btn_import_coco)
+        
+        parent.btn_import_batch = QPushButton("批量导入数据")
+        parent.btn_import_batch.clicked.connect(parent.import_batch_data)
+        export_layout.addWidget(parent.btn_import_batch)
+        
+        # 导出按钮组
         parent.btn_export_json = QPushButton("导出当前JSON")
         parent.btn_export_json.clicked.connect(parent.export_simple_json)
         export_layout.addWidget(parent.btn_export_json)
@@ -130,7 +144,7 @@ class Toolbars:
         parent.btn_export_yolo.clicked.connect(parent.export_yolo_dataset)
         export_layout.addWidget(parent.btn_export_yolo)
 
-        parent.btn_export_annotated = QPushButton("批量导出已完成")
+        parent.btn_export_annotated = QPushButton("批量导出已完成(coco格式)")
         parent.btn_export_annotated.clicked.connect(parent.export_annotated_images)
         export_layout.addWidget(parent.btn_export_annotated)
 
@@ -146,10 +160,6 @@ class Toolbars:
         parent.btn_help = QPushButton("使用说明")
         parent.btn_help.clicked.connect(parent.show_help)
         aux_layout.addWidget(parent.btn_help)
-
-        parent.btn_toggle_annotation = QPushButton("标记当前图片为已完成")
-        parent.btn_toggle_annotation.clicked.connect(parent.toggle_annotation_status)
-        aux_layout.addWidget(parent.btn_toggle_annotation)
 
         return aux_group
     
