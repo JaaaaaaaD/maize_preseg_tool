@@ -37,8 +37,11 @@ def get_auto_save_path(image_path):
         return None
     image_name = _safe_file_stem(os.path.splitext(os.path.basename(image_path))[0])
     path_hash = abs(hash(os.path.abspath(image_path))) % 10000
-    # 使用当前工作目录作为默认保存位置
-    return os.path.join(os.getcwd(), f"{image_name}_{path_hash}.maize")
+    # 使用images_status目录作为保存位置
+    save_dir = os.path.join(os.getcwd(), "images_status")
+    # 确保目录存在
+    os.makedirs(save_dir, exist_ok=True)
+    return os.path.join(save_dir, f"{image_name}_{path_hash}.maize")
 
 
 def _build_project_payload(
@@ -99,6 +102,28 @@ def save_current_annotation(
     try:
         # 确保保存目录存在（使用当前工作目录）
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        # 使用COCO格式保存
+        from PIL import Image
+        img = Image.open(image_path)
+        width, height = img.size
+        
+        save_path = save_path.replace('.maize', '.json')
+        coco_path = export_coco_format(
+            image_path,
+            plants,
+            width,
+            height,
+            export_path=save_path,
+            class_names=class_names,
+            ignored_regions=ignored_regions,
+            plant_groups=plant_groups,
+            image_state=image_state,
+            current_plant_id=current_plant_id,
+            project_id=project_id,
+        )
+        
+        # 构建payload用于返回
         payload = _build_project_payload(
             image_path,
             plants,
@@ -109,9 +134,8 @@ def save_current_annotation(
             class_names=class_names,
             ignored_regions=ignored_regions,
         )
-        with open(save_path, "w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
-        return True, save_path, payload
+        
+        return True, coco_path, payload
     except Exception as error:
         print(f"保存标注失败: {error}")
         return False, None, None
@@ -144,14 +168,92 @@ def _normalize_loaded_payload(payload, image_path=None, class_names=None):
 
 
 def load_annotation_file(save_path, class_names=None):
-    """按 .maize 路径加载标注。"""
+    """加载标注文件（支持COCO格式和旧.maize格式）。"""
     if not save_path or not os.path.exists(save_path):
         return None
 
     try:
         with open(save_path, "r", encoding="utf-8") as file:
             payload = json.load(file)
-        return _normalize_loaded_payload(payload, class_names=class_names)
+        
+        # 检查是否为COCO格式
+        if "annotations" in payload and "images" in payload:
+            # 转换COCO格式为内部格式
+            plants = []
+            for ann in payload.get("annotations", []):
+                # 处理分割数据
+                segmentation = ann.get("segmentation", [])
+                polygons = []
+                
+                if isinstance(segmentation, list):
+                    for seg in segmentation:
+                        if len(seg) >= 6:
+                            # COCO 格式：[x1, y1, x2, y2, ...]
+                            polygon = []
+                            for i in range(0, len(seg), 2):
+                                polygon.append((seg[i], seg[i+1]))
+                            if len(polygon) >= 3:
+                                polygons.append(polygon)
+                
+                if not polygons:
+                    continue
+                
+                # 获取类别信息
+                class_id = ann.get("category_id", 0)
+                class_name = "unknown"
+                
+                # 查找类别名称
+                for cat in payload.get("categories", []):
+                    if cat.get("id") == class_id:
+                        class_name = cat.get("name", "unknown")
+                        break
+                
+                # 创建植物实例
+                plant = {
+                    "id": len(plants) + 1,
+                    "class_id": class_id - 1,  # 转换为从0开始的索引
+                    "class_name": class_name,
+                    "polygons": polygons,
+                    "bbox": ann.get("bbox", []),
+                    "area": ann.get("area", 0),
+                    "iscrowd": ann.get("iscrowd", 0)
+                }
+                plants.append(plant)
+            
+            # 处理忽略区域
+            ignored_regions = []
+            for region in payload.get("ignored_regions", []):
+                # 检查是否是我们保存的格式（对象格式）
+                if isinstance(region, dict) and "segmentation" in region:
+                    # 处理对象格式的忽略区域
+                    segmentation = region.get("segmentation", [])
+                    if isinstance(segmentation, list):
+                        for seg in segmentation:
+                            if len(seg) >= 6:
+                                polygon = []
+                                for i in range(0, len(seg), 2):
+                                    polygon.append((seg[i], seg[i+1]))
+                                if len(polygon) >= 3:
+                                    ignored_regions.append(polygon)
+                elif isinstance(region, list) and len(region) >= 3:
+                    # 直接使用多边形
+                    ignored_regions.append(region)
+            
+            # 构建内部格式payload
+            internal_payload = {
+                "image_path": payload.get("image_path"),
+                "project_id": payload.get("project_id"),
+                "class_names": payload.get("class_names", class_names),
+                "plants": plants,
+                "plant_groups": payload.get("plant_groups", []),
+                "current_plant_id": payload.get("current_plant_id", 1),
+                "image_state": payload.get("image_state", {}),
+                "ignored_regions": ignored_regions,
+            }
+            return _normalize_loaded_payload(internal_payload, class_names=class_names)
+        else:
+            # 旧格式处理
+            return _normalize_loaded_payload(payload, class_names=class_names)
     except Exception as error:
         print(f"加载标注失败: {error}")
         return None
@@ -160,6 +262,7 @@ def load_annotation_file(save_path, class_names=None):
 def load_current_annotation(image_path, class_names=None):
     """加载当前标注。"""
     load_path = get_auto_save_path(image_path)
+    load_path = load_path.replace('.maize', '.json')
     if not load_path or not os.path.exists(load_path):
         return None
     annotation = load_annotation_file(load_path, class_names=class_names)
@@ -211,6 +314,10 @@ def export_coco_format(
     export_path=None,
     class_names=None,
     ignored_regions=None,
+    plant_groups=None,
+    image_state=None,
+    current_plant_id=None,
+    project_id=None,
 ):
     """导出为 COCO 格式。
 
@@ -261,6 +368,12 @@ def export_coco_format(
                 for class_id, class_name in enumerate(class_names)
             ],
             "ignored_regions": [],
+            "plant_groups": plant_groups or [],
+            "image_state": image_state or {},
+            "current_plant_id": current_plant_id or 1,
+            "project_id": project_id,
+            "class_names": class_names,
+            "image_path": image_path,
         }
 
         annotation_id = 1

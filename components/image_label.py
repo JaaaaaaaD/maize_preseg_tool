@@ -432,6 +432,11 @@ class ImageLabel(QLabel):
             self.current_snap_point = None
             self.update_display()
             return True
+        if self.current_ignored_points:
+            self.current_ignored_points.pop()
+            self.current_snap_point = None
+            self.update_display()
+            return True
         return False
 
     def mousePressEvent(self, event):
@@ -840,8 +845,8 @@ class ImageLabel(QLabel):
             for region in self.ignored_regions:
                 if len(region) >= 3:
                     qpts = [img_to_screen(point) for point in region]
-                    # 使用磨砂灰色覆盖
-                    painter.setBrush(QBrush(QColor(128, 128, 128, 100)))
+                    # 使用磨砂灰色覆盖，透明度20%
+                    painter.setBrush(QBrush(QColor(128, 128, 128, 51)))
                     painter.setPen(QPen(QColor(100, 100, 100), 1))
                     painter.drawPolygon(*qpts)
 

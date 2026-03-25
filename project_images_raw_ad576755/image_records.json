@@ -9,5 +9,27 @@
     "last_trained_seen_hash": null,
     "dirty_since_last_train": false,
     "project_id": "images_raw_ad576755"
+  },
+  "E:\\PycharmProjects\\maize_preseg_tool\\images_raw\\image_1_20260325095427.jpg": {
+    "image_path": "E:\\PycharmProjects\\maize_preseg_tool\\images_raw\\image_1_20260325095427.jpg",
+    "image_name": "image_1_20260325095427.jpg",
+    "annotation_file": "E:\\PycharmProjects\\maize_preseg_tool\\image_1_20260325095427_9546.maize",
+    "annotation_completed": false,
+    "last_modified_at": "2026-03-25 14:49:46",
+    "annotation_hash": "ae5900f350f04cdc750579965f97382e38b5953b",
+    "last_trained_seen_hash": null,
+    "dirty_since_last_train": false,
+    "project_id": "images_raw_ad576755"
+  },
+  "E:\\PycharmProjects\\maize_preseg_tool\\images_raw\\image_2_20260325095431.jpg": {
+    "image_path": "E:\\PycharmProjects\\maize_preseg_tool\\images_raw\\image_2_20260325095431.jpg",
+    "image_name": "image_2_20260325095431.jpg",
+    "annotation_file": "E:\\PycharmProjects\\maize_preseg_tool\\image_2_20260325095431_1707.maize",
+    "annotation_completed": true,
+    "last_modified_at": "2026-03-25 14:50:32",
+    "annotation_hash": "01ff7e67c9abd2502d1b98b926e0d81036c1c727",
+    "last_trained_seen_hash": null,
+    "dirty_since_last_train": true,
+    "project_id": "images_raw_ad576755"
   }
 }

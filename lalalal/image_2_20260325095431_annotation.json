@@ -1,0 +1,27 @@
+{
+  "image_path": "E:/PycharmProjects/maize_preseg_tool/images_raw/image_2_20260325095431.jpg",
+  "image_name": "image_2_20260325095431.jpg",
+  "project_id": null,
+  "class_names": [
+    "plant",
+    "stem",
+    "leaf",
+    "ear"
+  ],
+  "plants": [],
+  "plant_groups": [],
+  "current_plant_id": 1,
+  "next_plant_group_id": 1,
+  "image_state": {
+    "image_path": "E:/PycharmProjects/maize_preseg_tool/images_raw/image_2_20260325095431.jpg",
+    "annotation_completed": true,
+    "last_modified_at": "2026-03-25 14:50:32",
+    "last_trained_seen_hash": null,
+    "dirty_since_last_train": true
+  },
+  "ignored_regions": [],
+  "annotation_hash": "01ff7e67c9abd2502d1b98b926e0d81036c1c727",
+  "save_time": "2026-03-25 14:50:40",
+  "version": "project_loop_2.0",
+  "is_auto_save": true
+}

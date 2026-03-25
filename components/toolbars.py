@@ -86,6 +86,10 @@ class Toolbars:
         parent.btn_ignore_region.clicked.connect(parent.toggle_ignore_region)
         aux_func_layout.addWidget(parent.btn_ignore_region)
 
+        parent.btn_toggle_ai = QPushButton("AI辅助: 开启")
+        parent.btn_toggle_ai.clicked.connect(parent.toggle_ai_assist)
+        aux_func_layout.addWidget(parent.btn_toggle_ai)
+
         # parent.btn_load_sam = QPushButton("加载SAM模型")
         # parent.btn_load_sam.clicked.connect(parent.load_sam_model)
         # aux_func_layout.addWidget(parent.btn_load_sam)

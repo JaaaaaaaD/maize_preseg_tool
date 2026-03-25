@@ -847,6 +847,16 @@ class MainWindow(QMainWindow):
         else:
             self.btn_ignore_region.setText(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
             self.left_label.ignoring_region = False
+
+    def toggle_ai_assist(self):
+        """切换AI辅助功能。"""
+        self.ai_assist_enabled = not getattr(self, 'ai_assist_enabled', True)
+        if self.ai_assist_enabled:
+            self.btn_toggle_ai.setText("AI辅助: 开启")
+            # 启用AI辅助相关功能
+        else:
+            self.btn_toggle_ai.setText("AI辅助: 关闭")
+            # 禁用AI辅助相关功能
         self.left_label.update_display()
         self.update_status_bar()
 
@@ -1155,10 +1165,15 @@ class MainWindow(QMainWindow):
             
             # 查找对应图片的标注
             image_info = None
+            # 首先尝试通过file_name或image_name匹配
             for img in coco_data.get("images", []):
                 if img.get("file_name") == current_image_name or img.get("image_name") == current_image_name:
                     image_info = img
                     break
+            
+            # 如果没有找到，检查是否是单图片COCO文件
+            if not image_info and len(coco_data.get("images", [])) == 1:
+                image_info = coco_data.get("images", [])[0]
             
             if not image_info:
                 QMessageBox.warning(self, "警告", f"未找到与当前图片 {current_image_name} 对应的 COCO 标注")
@@ -1169,10 +1184,6 @@ class MainWindow(QMainWindow):
             for ann in coco_data.get("annotations", []):
                 if ann.get("image_id") == image_info.get("id"):
                     annotations.append(ann)
-            
-            if not annotations:
-                QMessageBox.information(self, "信息", f"当前图片 {current_image_name} 没有对应的标注")
-                return
             
             # 转换为平台内部格式
             plants = []
@@ -1219,18 +1230,28 @@ class MainWindow(QMainWindow):
             # 处理忽略区域
             ignored_regions = []
             for region in coco_data.get("ignored_regions", []):
-                segmentation = region.get("segmentation", [])
-                if isinstance(segmentation, list):
-                    for seg in segmentation:
-                        if len(seg) >= 6:
-                            polygon = []
-                            for i in range(0, len(seg), 2):
-                                polygon.append((seg[i], seg[i+1]))
-                            if len(polygon) >= 3:
-                                ignored_regions.append(polygon)
+                # 检查是否是我们保存的格式（对象格式）
+                if isinstance(region, dict) and "segmentation" in region:
+                    # 处理对象格式的忽略区域
+                    segmentation = region.get("segmentation", [])
+                    if isinstance(segmentation, list):
+                        for seg in segmentation:
+                            if len(seg) >= 6:
+                                polygon = []
+                                for i in range(0, len(seg), 2):
+                                    polygon.append((seg[i], seg[i+1]))
+                                if len(polygon) >= 3:
+                                    ignored_regions.append(polygon)
+                elif isinstance(region, list) and len(region) >= 3:
+                    # 直接使用多边形
+                    ignored_regions.append(region)
+            
+            # 处理植物组
+            plant_groups = coco_data.get("plant_groups", [])
             
             # 更新左侧标注区域
             self.left_label.plants = plants
+            self.left_label.plant_groups = plant_groups
             self.left_label.ignored_regions = ignored_regions
             self.left_label.update_display()
             
@@ -1361,18 +1382,28 @@ class MainWindow(QMainWindow):
                             # 处理忽略区域
                             ignored_regions = []
                             for region in coco_data.get("ignored_regions", []):
-                                segmentation = region.get("segmentation", [])
-                                if isinstance(segmentation, list):
-                                    for seg in segmentation:
-                                        if len(seg) >= 6:
-                                            polygon = []
-                                            for i in range(0, len(seg), 2):
-                                                polygon.append((seg[i], seg[i+1]))
-                                            if len(polygon) >= 3:
-                                                ignored_regions.append(polygon)
+                                # 检查是否是我们保存的格式（对象格式）
+                                if isinstance(region, dict) and "segmentation" in region:
+                                    # 处理对象格式的忽略区域
+                                    segmentation = region.get("segmentation", [])
+                                    if isinstance(segmentation, list):
+                                        for seg in segmentation:
+                                            if len(seg) >= 6:
+                                                polygon = []
+                                                for i in range(0, len(seg), 2):
+                                                    polygon.append((seg[i], seg[i+1]))
+                                                if len(polygon) >= 3:
+                                                    ignored_regions.append(polygon)
+                                elif isinstance(region, list) and len(region) >= 3:
+                                    # 直接使用多边形
+                                    ignored_regions.append(region)
+                            
+                            # 处理植物组
+                            plant_groups = coco_data.get("plant_groups", [])
                             
                             # 更新左侧标注区域
                             self.left_label.plants = plants
+                            self.left_label.plant_groups = plant_groups
                             self.left_label.ignored_regions = ignored_regions
                             self.left_label.update_display()
                             
