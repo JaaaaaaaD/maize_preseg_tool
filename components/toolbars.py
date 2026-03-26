@@ -133,6 +133,10 @@ class Toolbars:
         parent.btn_delete.clicked.connect(parent.delete_plant)
         plant_layout.addWidget(parent.btn_delete)
 
+        parent.btn_continue_annotation = QPushButton("继续标注选中植株")
+        parent.btn_continue_annotation.clicked.connect(parent.continue_annotation)
+        plant_layout.addWidget(parent.btn_continue_annotation)
+
         return plant_group
     
     @staticmethod

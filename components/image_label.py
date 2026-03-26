@@ -437,34 +437,45 @@ class ImageLabel(QLabel):
         # 构建最终多边形列表：第一个为外轮廓，后续为内孔
         final_polygons = []
         
-        # 添加外轮廓（第一个主多边形）
+        # 添加外轮廓（所有暂存区域）
         for poly in self.current_plant_polygons:
             if len(poly) >= 3:
                 # 确保多边形是闭合的
                 if poly[0] != poly[-1]:
-                    poly.append(poly[0])
-                # 确保外轮廓为顺时针方向
-                if self._get_polygon_area(poly) < 0:
+                    poly = poly + [poly[0]]
+                # 确保外轮廓为顺时针方向（面积为负）
+                if self._get_polygon_area(poly) > 0:
                     poly = poly[::-1]  # 反转顶点顺序
                 final_polygons.append(poly)
-                break  # 只使用第一个主多边形作为外轮廓
 
         # 添加内孔（所有去除区域）
-        for poly in self.removal_regions:
-            if len(poly) >= 3:
+        for removal_poly in self.removal_regions:
+            if len(removal_poly) >= 3:
                 # 确保多边形是闭合的
-                if poly[0] != poly[-1]:
-                    poly.append(poly[0])
+                if removal_poly[0] != removal_poly[-1]:
+                    removal_copy = removal_poly + [removal_poly[0]]
+                else:
+                    removal_copy = removal_poly.copy()
                 
-                # 计算去除区域与外轮廓的交集
-                outer_contour = final_polygons[0] if final_polygons else None
-                if outer_contour:
-                    intersection_poly = self._polygon_intersection(outer_contour, poly)
-                    if intersection_poly and len(intersection_poly) >= 3:
-                        # 确保内孔为逆时针方向（与外轮廓相反）
-                        if self._get_polygon_area(intersection_poly) > 0:
-                            intersection_poly = intersection_poly[::-1]  # 反转顶点顺序
-                        final_polygons.append(intersection_poly)
+                # 计算去除区域的中心点
+                x_coords = [p[0] for p in removal_copy]
+                y_coords = [p[1] for p in removal_copy]
+                center_x = sum(x_coords) / len(x_coords)
+                center_y = sum(y_coords) / len(y_coords)
+                center_point = (center_x, center_y)
+                
+                # 找到中心点所在的外多边形
+                for i, outer_contour in enumerate(final_polygons):
+                    # 检查中心点是否在外多边形内部
+                    if self._point_in_polygon(center_point, outer_contour):
+                        # 计算去除区域与外轮廓的交集
+                        intersection_poly = self._polygon_intersection(outer_contour, removal_copy)
+                        if intersection_poly and len(intersection_poly) >= 3:
+                            # 确保内孔为逆时针方向（面积为正）
+                            if self._get_polygon_area(intersection_poly) < 0:
+                                intersection_poly = intersection_poly[::-1]  # 反转顶点顺序
+                            final_polygons.append(intersection_poly)
+                        break  # 一个去除区域只关联一个外多边形
 
         # 如果最终多边形列表为空，返回失败
         if not final_polygons:
@@ -782,6 +793,39 @@ class ImageLabel(QLabel):
             area += (x1 * y2) - (x2 * y1)
         return area / 2.0
 
+    def _point_in_polygon(self, point, polygon):
+        """判断点是否在多边形内部。"""
+        try:
+            import cv2
+            import numpy as np
+            
+            # 确保多边形是闭合的
+            if polygon[0] != polygon[-1]:
+                polygon = polygon + [polygon[0]]
+            
+            # 转换为numpy数组
+            polygon_np = np.array(polygon, dtype=np.int32)
+            point_np = np.array(point, dtype=np.float32)
+            
+            # 使用cv2.pointPolygonTest判断点是否在多边形内部
+            result = cv2.pointPolygonTest(polygon_np, point_np, False)
+            
+            # result > 0 表示点在多边形内部，result == 0 表示点在多边形边上
+            return result >= 0
+        except Exception as e:
+            print(f"_point_in_polygon error: {e}")
+            # 如果出错，使用射线法判断
+            x, y = point
+            inside = False
+            n = len(polygon)
+            for i in range(n):
+                j = (i + 1) % n
+                xi, yi = polygon[i]
+                xj, yj = polygon[j]
+                if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                    inside = not inside
+            return inside
+
     def _polygon_intersection(self, poly1, poly2):
         """计算两个多边形的交集。"""
         try:
@@ -835,12 +879,23 @@ class ImageLabel(QLabel):
             # 取最大的轮廓
             largest_contour = max(contours, key=cv2.contourArea)
             
-            # 转换回原始坐标系
+            # 转换回原始坐标系并控制点的密度
             intersection_poly = []
-            for point in largest_contour:
-                x = point[0][0] + min_x
-                y = point[0][1] + min_y
-                intersection_poly.append((float(x), float(y)))
+            for i, point in enumerate(largest_contour):
+                # 每五个像素取一个点
+                if i % 5 == 0:
+                    x = point[0][0] + min_x
+                    y = point[0][1] + min_y
+                    intersection_poly.append((float(x), float(y)))
+            
+            # 确保至少有3个点
+            if len(intersection_poly) < 3:
+                # 如果点太少，使用所有点
+                intersection_poly = []
+                for point in largest_contour:
+                    x = point[0][0] + min_x
+                    y = point[0][1] + min_y
+                    intersection_poly.append((float(x), float(y)))
             
             # 确保多边形是闭合的
             if intersection_poly and intersection_poly[0] != intersection_poly[-1]:
@@ -1115,22 +1170,22 @@ class ImageLabel(QLabel):
                 temp_painter = QPainter(temp_pixmap)
                 temp_painter.setRenderHint(QPainter.Antialiasing)
                 
-                # 绘制外轮廓（第一个多边形）
-                if len(polygons[0]) >= 3:
-                    qpts = [img_to_screen(point) for point in polygons[0]]
-                    if summary_mode:
-                        temp_painter.setBrush(QBrush(plant_color))
-                        temp_painter.setPen(QPen(QColor(255, 0, 0), 3) if is_selected else QPen(QColor(0, 0, 0), 1))
-                    else:
-                        weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), 55)
-                        temp_painter.setBrush(QBrush(weak_color))
-                        temp_painter.setPen(QPen(QColor(255, 80, 80), 3) if is_selected else QPen(QColor(100, 100, 100), 1))
-                    temp_painter.drawPolygon(*qpts)
+                # 绘制所有外轮廓（面积为负的多边形）
+                for polygon in polygons:
+                    if len(polygon) >= 3 and self._get_polygon_area(polygon) <= 0:
+                        qpts = [img_to_screen(point) for point in polygon]
+                        if summary_mode:
+                            temp_painter.setBrush(QBrush(plant_color))
+                            temp_painter.setPen(QPen(QColor(255, 0, 0), 3) if is_selected else QPen(QColor(0, 0, 0), 1))
+                        else:
+                            weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), 55)
+                            temp_painter.setBrush(QBrush(weak_color))
+                            temp_painter.setPen(QPen(QColor(255, 80, 80), 3) if is_selected else QPen(QColor(100, 100, 100), 1))
+                        temp_painter.drawPolygon(*qpts)
                 
-                # 绘制内孔（后续多边形）
-                for i in range(1, len(polygons)):
-                    polygon = polygons[i]
-                    if len(polygon) >= 3:
+                # 绘制所有内孔（面积为正的多边形）
+                for polygon in polygons:
+                    if len(polygon) >= 3 and self._get_polygon_area(polygon) > 0:
                         qpts = [img_to_screen(point) for point in polygon]
                         # 使用组合模式实现挖空
                         temp_painter.setCompositionMode(QPainter.CompositionMode_DestinationOut)

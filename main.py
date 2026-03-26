@@ -951,6 +951,36 @@ class MainWindow(QMainWindow):
             self.refresh_properties_panel()
             self.update_status_bar()
 
+    def continue_annotation(self):
+        """继续标注选中的植株。"""
+        if not self.left_label.selected_entity_id:
+            QMessageBox.warning(self, "警告", "请先选择一个植株")
+            return
+
+        # 加载选中植株的多边形到暂存区域
+        plant_id = self.left_label.selected_entity_id
+        plant = next((p for p in self.left_label.plants if int(p.get("id", 0)) == int(plant_id)), None)
+        if plant:
+            # 清空当前的暂存区域和去除区域
+            self.left_label.current_plant_polygons = []
+            self.left_label.removal_regions = []
+            
+            # 加载植株的多边形到暂存区域（只加载外轮廓）
+            polygons = plant.get("polygons", [])
+            for polygon in polygons:
+                # 只加载外轮廓（面积为负的多边形）
+                if self.left_label._get_polygon_area(polygon) <= 0:
+                    self.left_label.current_plant_polygons.append(polygon.copy())
+            
+            # 更新显示
+            self.left_label.update_display()
+            
+            # 同步右侧画布
+            self.sync_summary_view()
+            
+            # 通知主窗口更新coco容器
+            self.left_label._notify_annotation_changed()
+
     def on_plant_selected(self, text):
         if not text:
             return
