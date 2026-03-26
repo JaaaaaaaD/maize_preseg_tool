@@ -254,8 +254,16 @@ class MainWindow(QMainWindow):
         """刷新项目状态，实时读取最新的已完成和未完成状态。"""
         # 刷新项目元数据
         self.refresh_project_metadata()
+        # 从coco容器加载最新标注数据
+        self.load_annotation_from_coco_container()
         # 刷新属性面板
         self.refresh_properties_panel()
+        # 刷新画布显示
+        self.left_label.update_display()
+        # 刷新植株列表
+        self.update_plant_list()
+        # 同步右侧总览视图
+        self.sync_summary_view()
         # 刷新状态栏
         self.update_status_bar()
         # 显示刷新成功消息
@@ -774,6 +782,8 @@ class MainWindow(QMainWindow):
             self.left_label.removing_region = False
             self.left_label.region_growing_enabled = False
             self.left_label.current_ignored_points = []
+            # 更新去除区域按钮文本
+            self.btn_removal_region.setText("去除区域 (R)")
         else:
             self.btn_ignore_region.setText(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
             self.left_label.ignoring_region = False
@@ -791,6 +801,9 @@ class MainWindow(QMainWindow):
             self.left_label.ignoring_region = False
             self.left_label.region_growing_enabled = False
             self.left_label.current_removal_points = []
+            # 更新忽略区域按钮文本
+            self.btn_ignore_region.setText(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
+            self.ignoring_region = False
         else:
             self.btn_removal_region.setText("去除区域 (R)")
             self.left_label.removing_region = False
@@ -816,15 +829,6 @@ class MainWindow(QMainWindow):
             self.btn_toggle_projection.setText("投影框: 关闭")
         self.sync_summary_view()
         self.update_status_bar()
-
-    def clear_last_ignore_region(self):
-        """清除上一个忽略区域。"""
-        if self.left_label.ignored_regions:
-            self.left_label.ignored_regions.pop()
-            self.left_label.update_display()
-            self.sync_summary_view()
-            self.mark_annotation_changed()
-            self.update_status_bar()
 
     def clear_all_ignore_regions(self):
         """清除所有忽略区域。"""

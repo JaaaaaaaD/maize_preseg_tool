@@ -94,10 +94,6 @@ class Toolbars:
         parent.btn_removal_region.clicked.connect(parent.toggle_removal_region)
         aux_func_layout.addWidget(parent.btn_removal_region)
 
-        parent.btn_clear_last_ignore = QPushButton("清除上一个忽略区域")
-        parent.btn_clear_last_ignore.clicked.connect(parent.clear_last_ignore_region)
-        aux_func_layout.addWidget(parent.btn_clear_last_ignore)
-
         parent.btn_clear_all_ignore = QPushButton("清除所有忽略区域")
         parent.btn_clear_all_ignore.clicked.connect(parent.clear_all_ignore_regions)
         aux_func_layout.addWidget(parent.btn_clear_all_ignore)
