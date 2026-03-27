@@ -521,19 +521,20 @@ def load_annotation_file(file_path, class_names=None):
 
 
 def batch_export_annotations(
-    image_paths,
     export_dir,
-    project_id=None,
-    progress_callback=None,
-    coco_container=None
+    image_paths,
+    coco_container=None,
+    class_names=None,
+    progress_callback=None
 ):
     """批量导出标注为COCO格式。"""
     if not image_paths or not export_dir:
-        return {"exported": 0, "errors": 0}
+        return 0, 0, 0
 
     try:
         os.makedirs(export_dir, exist_ok=True)
         exported_count = 0
+        skipped_count = 0
         error_count = 0
         total = len(image_paths)
 
@@ -557,6 +558,7 @@ def batch_export_annotations(
                 
                 # 检查是否已标注
                 if not annotation.get("image_state", {}).get("annotation_completed", False):
+                    skipped_count += 1
                     continue
                 
                 # 构建导出路径，使用原图片名+anno
@@ -578,12 +580,11 @@ def batch_export_annotations(
                     width,
                     height,
                     export_path,
-                    class_names=annotation.get("class_names"),
+                    class_names=class_names or annotation.get("class_names"),
                     ignored_regions=annotation.get("ignored_regions"),
                     plant_groups=annotation.get("plant_groups"),
                     image_state=annotation.get("image_state"),
-                    current_plant_id=annotation.get("current_plant_id"),
-                    project_id=project_id
+                    current_plant_id=annotation.get("current_plant_id")
                 )
                 
                 if success:
@@ -594,10 +595,10 @@ def batch_export_annotations(
                 print(f"导出 {image_path} 失败: {e}")
                 error_count += 1
 
-        return {"exported": exported_count, "errors": error_count}
+        return exported_count, skipped_count, error_count
     except Exception as error:
         print(f"批量导出失败: {error}")
-        return {"exported": 0, "errors": len(image_paths)}
+        return 0, 0, len(image_paths)
 
 
 def batch_import_annotations(

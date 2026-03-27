@@ -59,6 +59,7 @@ class ImageLabel(QLabel):
         self.current_plant_labels = []  # 存储每个暂存区域的 label
         self.current_plant_id = 1
         self.selected_plant_id = None
+        self.next_owner_plant_id = None
 
         self.candidate_instances = []
         self.selected_entity_kind = None
@@ -95,9 +96,8 @@ class ImageLabel(QLabel):
         self.removing_region = False  # 是否处于去除区域绘制模式
         
         # 操作栈
-        self.annotation_stack = []  # 标注区域操作栈
+        self.main_stack = []  # 标注区域和去除区域共用的栈
         self.ignore_stack = []  # 忽略区域操作栈
-        self.removal_stack = []  # 去除区域操作栈
 
     
 
@@ -324,6 +324,14 @@ class ImageLabel(QLabel):
         if area <= 5:
             return False
 
+        # 记录操作到栈中，以便撤销时恢复到保存前的状态
+        self.main_stack.append({
+            'action': 'save_polygon',
+            'current_points': self.current_points.copy(),
+            'current_plant_polygons': self.current_plant_polygons.copy(),
+            'current_plant_labels': self.current_plant_labels.copy()
+        })
+        
         self.current_plant_polygons.append(unique_points)
         self.current_plant_labels.append(label)  # 存储当前区域的 label
         self.current_points = []
@@ -384,10 +392,11 @@ class ImageLabel(QLabel):
         if area <= 5:
             return False
 
-        # 记录操作前的状态
-        self.removal_stack.append({
-            'action': 'save_region',
-            'regions': self.removal_regions.copy()
+        # 记录操作到栈中
+        self.main_stack.append({
+            'action': 'save_removal_region',
+            'regions': self.removal_regions.copy(),
+            'current_removal_points': self.current_removal_points.copy()
         })
 
         self.removal_regions.append(unique_points)
@@ -473,7 +482,6 @@ class ImageLabel(QLabel):
             polygons=final_polygons,
             
             source="manual",
-            owner_plant_id=self.next_owner_plant_id,
         )
 
         # 添加 label 信息
@@ -484,11 +492,16 @@ class ImageLabel(QLabel):
         saved_id = self.current_plant_id
         self.current_plant_id += 1
 
-        # 清空当前暂存的多边形、label 和去除区域
+        # 清空当前暂存的多边形、label、去除区域和正在绘制的点
         self.current_plant_polygons = []
         self.current_plant_labels = []
         self.removal_regions = []
+        self.current_points = []
+        self.current_removal_points = []
 
+        # 保存整个植株时清空撤销栈
+        self.main_stack = []
+        
         # 通知主窗口更新
         self._notify_annotation_changed()
         self.update_display()
@@ -500,28 +513,8 @@ class ImageLabel(QLabel):
         if self.is_summary:
             return False
 
-        # 根据当前模式选择对应的栈进行撤销
-        if self.removing_region:
-            # 去除区域模式
-            if self.current_removal_points:
-                if self.removal_stack:
-                    last_action = self.removal_stack.pop()
-                    if last_action['action'] == 'add_point':
-                        self.current_removal_points = last_action['points']
-                else:
-                    self.current_removal_points.pop()
-                self.current_snap_point = None
-                self.update_display()
-                return True
-            # 检查是否有已保存的去除区域操作可以撤销
-            elif self.removal_stack:
-                last_action = self.removal_stack.pop()
-                if last_action['action'] == 'save_region':
-                    self.removal_regions = last_action['regions']
-                    self.update_display()
-                    return True
-        elif self.ignoring_region:
-            # 忽略区域模式
+        # 忽略区域模式
+        if self.ignoring_region:
             if self.current_ignored_points:
                 if self.ignore_stack:
                     last_action = self.ignore_stack.pop()
@@ -540,30 +533,56 @@ class ImageLabel(QLabel):
                     self.update_display()
                     return True
         else:
-            # 标注区域模式
-            if self.current_points:
-                if self.annotation_stack:
-                    last_action = self.annotation_stack.pop()
-                    if last_action['action'] == 'add_point':
-                        self.current_points = last_action['points']
-                else:
-                    self.current_points.pop()
+            # 标注区域和去除区域共用栈
+            if self.main_stack:
+                last_action = self.main_stack.pop()
+                
+                # 处理暂存区域保存操作的撤销
+                if last_action['action'] == 'save_polygon':
+                    # 恢复到保存前的状态，包括恢复current_points
+                    self.current_points = last_action['current_points']
+                    self.current_plant_polygons = last_action['current_plant_polygons']
+                    self.current_plant_labels = last_action['current_plant_labels']
+                    self.current_snap_point = None
+                    self.update_display()
+                    return True
+                
+                # 处理去除区域保存操作的撤销
+                elif last_action['action'] == 'save_removal_region':
+                    self.removal_regions = last_action['regions']
+                    self.current_removal_points = last_action['current_removal_points']
+                    self.current_snap_point = None
+                    self.update_display()
+                    return True
+                
+                # 处理添加标注点操作的撤销
+                elif last_action['action'] == 'add_point':
+                    self.current_points = last_action['points']
+                    self.current_snap_point = None
+                    self.update_display()
+                    return True
+                
+                # 处理添加去除区域点操作的撤销
+                elif last_action['action'] == 'add_removal_point':
+                    self.current_removal_points = last_action['points']
+                    self.current_snap_point = None
+                    self.update_display()
+                    return True
+            
+            # 现在所有点添加操作都通过栈记录，不需要直接操作当前点列表
+            # 如果栈为空且当前有点，则直接清空（处理可能的边界情况）
+            if self.removing_region and self.current_removal_points and not self.main_stack:
+                self.current_removal_points = []
                 self.current_snap_point = None
                 self.update_display()
                 return True
-            if self.current_plant_polygons:
-                self.current_plant_polygons.pop()
-                if self.current_plant_labels:
-                    self.current_plant_labels.pop()
+            elif not self.removing_region and self.current_points and not self.main_stack:
+                self.current_points = []
                 self.current_snap_point = None
                 self.update_display()
                 return True
 
-        # 通用撤销
-        if self.removal_regions:
-            self.removal_regions.pop()
-            self.update_display()
-            return True
+        # 忽略区域的通用撤销
         if self.ignored_regions:
             self.ignored_regions.pop()
             self.update_display()
@@ -618,12 +637,12 @@ class ImageLabel(QLabel):
                 return
 
             if self.removing_region:
+                # 记录操作前的状态，包括添加第一个点的情况
+                self.main_stack.append({
+                    'action': 'add_removal_point',
+                    'points': self.current_removal_points.copy()
+                })
                 if self.current_removal_points:
-                    # 记录操作前的状态
-                    self.removal_stack.append({
-                        'action': 'add_point',
-                        'points': self.current_removal_points.copy()
-                    })
                     self.current_removal_points.append(image_pos)
                 else:
                     self.current_removal_points = [image_pos]
@@ -741,12 +760,11 @@ class ImageLabel(QLabel):
 
     def _append_current_point(self, image_pos):
         """向当前手工 polygon 添加一个点。"""
-        # 记录操作前的状态
-        if self.current_points:
-            self.annotation_stack.append({
-                'action': 'add_point',
-                'points': self.current_points.copy()
-            })
+        # 记录操作前的状态，包括添加第一个点的情况
+        self.main_stack.append({
+            'action': 'add_point',
+            'points': self.current_points.copy()
+        })
         if self.edge_snap_enabled and self.current_snap_point is not None:
             self.current_points.append(self.current_snap_point)
         else:

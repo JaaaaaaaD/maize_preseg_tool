@@ -729,6 +729,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
 
+        # 检查是否有未保存的标注点
+        if self.left_label.current_points and not self.region_growing_enabled:
+            reply = QMessageBox.question(self, "未保存的点", "当前有未保存的标注点，是否忽略这些点并切换到区域生长模式？",
+                                         QMessageBox.Ignore | QMessageBox.Cancel, QMessageBox.Cancel)
+            if reply == QMessageBox.Cancel:
+                return
+            elif reply == QMessageBox.Ignore:
+                # 清空未保存的标注点
+                self.left_label.current_points = []
+                self.left_label.current_snap_point = None
+                self.left_label.update_display()
+
         self.region_growing_enabled = not self.region_growing_enabled
         if self.region_growing_enabled:
             self.btn_region_growing.setText(f"退出膨胀点选 ({SHORTCUTS['TOGGLE_REGION_GROWING']})")
@@ -746,6 +758,32 @@ class MainWindow(QMainWindow):
         if not self.current_image:
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
+
+        # 检查是否有未保存的标注点或去除区域点
+        has_unsaved_points = False
+        message = ""
+        
+        if not self.ignoring_region:
+            if self.left_label.current_points:
+                has_unsaved_points = True
+                message = "当前有未保存的标注点"
+            elif self.left_label.current_removal_points:
+                has_unsaved_points = True
+                message = "当前有未保存的去除区域点"
+            
+            if has_unsaved_points:
+                reply = QMessageBox.question(self, "未保存的点", f"{message}，是否忽略这些点并切换到忽略区域模式？",
+                                             QMessageBox.Ignore | QMessageBox.Cancel, QMessageBox.Cancel)
+                if reply == QMessageBox.Cancel:
+                    return
+                elif reply == QMessageBox.Ignore:
+                    # 清空未保存的点
+                    if self.left_label.current_points:
+                        self.left_label.current_points = []
+                    elif self.left_label.current_removal_points:
+                        self.left_label.current_removal_points = []
+                    self.left_label.current_snap_point = None
+                    self.left_label.update_display()
 
         self.ignoring_region = not self.ignoring_region
         if self.ignoring_region:
@@ -765,6 +803,32 @@ class MainWindow(QMainWindow):
         if not self.current_image:
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
+
+        # 检查是否有未保存的标注点或忽略区域点
+        has_unsaved_points = False
+        message = ""
+        
+        if not self.left_label.removing_region:
+            if self.left_label.current_points:
+                has_unsaved_points = True
+                message = "当前有未保存的标注点"
+            elif self.left_label.current_ignored_points:
+                has_unsaved_points = True
+                message = "当前有未保存的忽略区域点"
+            
+            if has_unsaved_points:
+                reply = QMessageBox.question(self, "未保存的点", f"{message}，是否忽略这些点并切换到去除区域模式？",
+                                             QMessageBox.Ignore | QMessageBox.Cancel, QMessageBox.Cancel)
+                if reply == QMessageBox.Cancel:
+                    return
+                elif reply == QMessageBox.Ignore:
+                    # 清空未保存的点
+                    if self.left_label.current_points:
+                        self.left_label.current_points = []
+                    elif self.left_label.current_ignored_points:
+                        self.left_label.current_ignored_points = []
+                    self.left_label.current_snap_point = None
+                    self.left_label.update_display()
 
         # 切换去除区域模式
         self.left_label.removing_region = not self.left_label.removing_region
