@@ -53,6 +53,17 @@ class Toolbars:
         annotate_layout = QVBoxLayout()
         annotate_group.setLayout(annotate_layout)
 
+        # Label 选择下拉框
+        label_group = QGroupBox("区域标签")
+        label_layout = QVBoxLayout()
+        label_group.setLayout(label_layout)
+        
+        parent.combo_label = QComboBox()
+        parent.combo_label.addItems(["stem", "leaf", "ear"])
+        parent.combo_label.setMinimumWidth(150)
+        label_layout.addWidget(parent.combo_label)
+        annotate_layout.addWidget(label_group)
+
         parent.btn_save_polygon = QPushButton(f"暂存当前区域 ({SHORTCUTS['SAVE_POLYGON']})")
         parent.btn_save_polygon.clicked.connect(parent.save_current_polygon)
         annotate_layout.addWidget(parent.btn_save_polygon)
@@ -122,7 +133,6 @@ class Toolbars:
 
         parent.combo_plants = QComboBox()
         parent.combo_plants.setMinimumWidth(150)
-        parent.combo_plants.currentTextChanged.connect(parent.on_plant_selected)
         plant_layout.addWidget(parent.combo_plants)
 
         parent.btn_delete = QPushButton(f"删除选中植株 ({SHORTCUTS['DELETE_PLANT']})")

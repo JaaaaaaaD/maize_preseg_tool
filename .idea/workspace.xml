@@ -10,6 +10,9 @@
       <change beforePath="$PROJECT_DIR$/components/toolbars.py" beforeDir="false" afterPath="$PROJECT_DIR$/components/toolbars.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/project_images_raw_ad576755/project_metadata.json" beforeDir="false" afterPath="$PROJECT_DIR$/project_images_raw_ad576755/project_metadata.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ui/annotation_properties_panel.py" beforeDir="false" afterPath="$PROJECT_DIR$/ui/annotation_properties_panel.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/annotation_schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/annotation_schema.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/data_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/data_manager.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

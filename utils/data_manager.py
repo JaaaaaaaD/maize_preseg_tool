@@ -8,9 +8,7 @@ import tempfile
 from config import DEFAULT_CLASS_NAMES, VERSION
 from utils.annotation_schema import (
     compute_annotation_hash,
-    ensure_plant_groups,
     next_instance_id,
-    next_plant_group_id,
     normalize_formal_instance,
     normalize_image_state,
 )
@@ -36,7 +34,6 @@ def _build_project_payload(
     image_path,
     plants,
     current_plant_id,
-    plant_groups=None,
     image_state=None,
     project_id=None,
     class_names=None,
@@ -46,10 +43,9 @@ def _build_project_payload(
     class_names = list(class_names or DEFAULT_CLASS_NAMES)
     normalized_plants = []
     for index, plant in enumerate(plants or [], start=1):
-        normalized_plants.append(normalize_formal_instance(plant, class_names, index))
+        normalized_plants.append(normalize_formal_instance(plant, index))
 
     normalized_state = normalize_image_state(image_path, image_state)
-    normalized_groups = ensure_plant_groups(normalized_plants, plant_groups or [])
 
     # 提取图片名称（不包含路径）
     image_name = os.path.basename(image_path)
@@ -60,12 +56,10 @@ def _build_project_payload(
         "project_id": project_id,
         "class_names": class_names,
         "plants": normalized_plants,
-        "plant_groups": normalized_groups,
         "current_plant_id": next_instance_id(normalized_plants, current_plant_id),
-        "next_plant_group_id": next_plant_group_id(normalized_groups),
         "image_state": normalized_state,
         "ignored_regions": ignored_regions or [],
-        "annotation_hash": compute_annotation_hash(normalized_plants, normalized_groups, normalized_state),
+        "annotation_hash": compute_annotation_hash(normalized_plants, normalized_state),
         "save_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "version": VERSION,
     }
@@ -79,7 +73,6 @@ def save_annotation_manually(
     export_path,
     class_names=None,
     ignored_regions=None,
-    plant_groups=None,
     image_state=None,
     current_plant_id=None,
     project_id=None
@@ -187,10 +180,9 @@ def _build_coco_format(
     image_height,
     class_names=None,
     ignored_regions=None,
-    plant_groups=None,
     image_state=None,
     current_plant_id=None,
-    project_id=None,
+    project_id=None
 ):
     """构建标准COCO格式数据。"""
     class_names = list(class_names or DEFAULT_CLASS_NAMES)
@@ -245,7 +237,6 @@ def _build_coco_format(
             for class_id, class_name in enumerate(class_names)
         ],
         "custom_extensions": {
-            "plant_groups": plant_groups or [],
             "class_names": class_names,
             "project_id": project_id
         }
@@ -283,14 +274,13 @@ def _build_coco_format(
             {
                 "id": annotation_id,
                 "image_id": image_id,
-                "category_id": int(plant.get("class_id", 0)) + 1,
+                "category_id": 1,  # 默认类别
                 "segmentation": segmentation,
                 "area": float(total_area),
                 "bbox": [x_min, y_min, width, height],
                 "iscrowd": 0,
                 "attributes": {
                     "instance_id": plant.get("id", 0),
-                    "class_name": plant.get("class_name"),
                     "source": plant.get("source"),
                     "owner_plant_id": plant.get("owner_plant_id"),
                 },
@@ -384,21 +374,9 @@ def load_annotation_from_coco(coco_path, class_names=None):
                 if not polygons:
                     continue
                 
-                # 获取类别信息
-                class_id = ann.get("category_id", 0)
-                class_name = "unknown"
-                
-                # 查找类别名称
-                for cat in coco_data.get("categories", []):
-                    if cat.get("id") == class_id:
-                        class_name = cat.get("name", "unknown")
-                        break
-                
                 # 创建植物实例
                 plant = {
                     "id": ann.get("attributes", {}).get("instance_id", len(plants) + 1),
-                    "class_id": class_id - 1,  # 转换为从0开始的索引
-                    "class_name": class_name,
                     "polygons": polygons,
                     "bbox": ann.get("bbox", []),
                     "area": ann.get("area", 0),
@@ -413,7 +391,6 @@ def load_annotation_from_coco(coco_path, class_names=None):
         image_path = image_info.get("attributes", {}).get("original_path")
         
         # 获取自定义扩展信息
-        plant_groups = coco_data.get("custom_extensions", {}).get("plant_groups", [])
         class_names = coco_data.get("custom_extensions", {}).get("class_names", class_names)
         project_id = coco_data.get("custom_extensions", {}).get("project_id")
         
@@ -431,7 +408,6 @@ def load_annotation_from_coco(coco_path, class_names=None):
             "project_id": project_id,
             "class_names": class_names,
             "plants": plants,
-            "plant_groups": plant_groups,
             "current_plant_id": coco_data.get("info", {}).get("custom", {}).get("current_plant_id", 1),
             "image_state": image_state,
             "ignored_regions": ignored_regions,
@@ -521,20 +497,17 @@ def _normalize_loaded_payload(payload, image_path=None, class_names=None):
 
     plants = []
     for index, plant in enumerate(payload.get("plants", []), start=1):
-        plants.append(normalize_formal_instance(plant, class_names, index))
+        plants.append(normalize_formal_instance(plant, index))
 
-    plant_groups = ensure_plant_groups(plants, payload.get("plant_groups", []))
     image_state = normalize_image_state(image_path or payload.get("image_path"), payload.get("image_state"))
-    annotation_hash = payload.get("annotation_hash") or compute_annotation_hash(plants, plant_groups, image_state)
+    annotation_hash = payload.get("annotation_hash") or compute_annotation_hash(plants, image_state)
 
     return {
         "image_path": image_path or payload.get("image_path"),
         "project_id": payload.get("project_id"),
         "class_names": class_names,
         "plants": plants,
-        "plant_groups": plant_groups,
         "current_plant_id": next_instance_id(plants, payload.get("current_plant_id", 1)),
-        "next_plant_group_id": next_plant_group_id(plant_groups),
         "image_state": image_state,
         "ignored_regions": payload.get("ignored_regions", []),
         "annotation_hash": annotation_hash,

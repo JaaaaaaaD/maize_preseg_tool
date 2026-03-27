@@ -11,15 +11,11 @@ from PyQt5.QtWidgets import QLabel, QProgressDialog, QSizePolicy
 
 from config import SNAP_RADIUS
 from utils.annotation_schema import (
-    ensure_plant_groups,
     make_formal_instance,
-    make_plant_group,
     next_instance_id,
-    next_plant_group_id,
     normalize_candidate_instance,
     normalize_formal_instance,
     normalize_polygons,
-    set_instance_owner,
     touch_instance,
 )
 from utils.auxiliary_algorithms import convert_mask_to_polygon, perform_region_growing
@@ -58,17 +54,16 @@ class ImageLabel(QLabel):
         self.vertex_hit_radius = 8
 
         self.plants = []
-        self.plant_groups = []
         self.current_points = []
         self.current_plant_polygons = []
+        self.current_plant_labels = []  # 存储每个暂存区域的 label
         self.current_plant_id = 1
-        self.next_owner_plant_id = 1
         self.selected_plant_id = None
 
         self.candidate_instances = []
         self.selected_entity_kind = None
         self.selected_entity_id = None
-        self.class_names = ["plant"]
+
 
         self.is_summary = is_summary
         self.setMouseTracking(True)
@@ -104,10 +99,7 @@ class ImageLabel(QLabel):
         self.ignore_stack = []  # 忽略区域操作栈
         self.removal_stack = []  # 去除区域操作栈
 
-    def set_class_names(self, class_names):
-        """更新当前项目类别配置。"""
-        if class_names:
-            self.class_names = list(class_names)
+    
 
     def set_image(self, pil_image, preprocessed_data=None):
         """设置图像，支持传入预处理数据。"""
@@ -116,6 +108,7 @@ class ImageLabel(QLabel):
         try:
             self.current_points = []
             self.current_plant_polygons = []
+            self.current_plant_labels = []
             self.selected_entity_kind = None
             self.selected_entity_id = None
             self.selected_plant_id = None
@@ -144,20 +137,19 @@ class ImageLabel(QLabel):
             print(f"set_image error: {error}")
             traceback.print_exc()
 
-    def set_annotation_state(self, plants, plant_groups=None, current_plant_id=None, next_owner_plant_id=None):
+    def set_annotation_state(self, plants, current_plant_id=None):
         """加载正式层状态。"""
         normalized_plants = []
         for index, plant in enumerate(plants or [], start=1):
-            normalized_plants.append(normalize_formal_instance(plant, self.class_names, index))
+            normalized_plants.append(normalize_formal_instance(plant, index))
         self.plants = normalized_plants
-        self.plant_groups = ensure_plant_groups(self.plants, plant_groups or [])
         self.current_plant_id = next_instance_id(self.plants, current_plant_id or 1)
-        self.next_owner_plant_id = next_owner_plant_id or next_plant_group_id(self.plant_groups)
         self.selected_entity_kind = None
         self.selected_entity_id = None
         self.selected_plant_id = None
         self.current_points = []
         self.current_plant_polygons = []
+        self.current_plant_labels = []
         self.candidate_instances = []
         self.update_display()
 
@@ -165,7 +157,7 @@ class ImageLabel(QLabel):
         """替换候选层。"""
         normalized_candidates = []
         for index, candidate in enumerate(candidates or [], start=1):
-            normalized_candidates.append(normalize_candidate_instance(candidate, self.class_names, index))
+            normalized_candidates.append(normalize_candidate_instance(candidate, index))
         self.candidate_instances = normalized_candidates
         if self.selected_entity_kind == "candidate":
             if not any(candidate["candidate_id"] == self.selected_entity_id for candidate in self.candidate_instances):
@@ -182,21 +174,13 @@ class ImageLabel(QLabel):
         self.update_display()
 
     def get_annotation_state(self):
-        """导出正式层状态，供主窗口保存。"""
+        """获取当前标注状态。"""
         return {
             "plants": copy.deepcopy(self.plants),
-            "plant_groups": copy.deepcopy(self.plant_groups),
             "current_plant_id": self.current_plant_id,
-            "next_owner_plant_id": self.next_owner_plant_id,
         }
 
-    def create_plant_group(self, plant_name=None):
-        """新建植株归属组。"""
-        plant_group = make_plant_group(self.next_owner_plant_id, plant_name)
-        self.plant_groups.append(plant_group)
-        self.next_owner_plant_id += 1
-        self.update_display()
-        return plant_group
+    
 
     def get_selected_entity(self):
         """获取当前选中的正式实例或候选实例。"""
@@ -230,31 +214,9 @@ class ImageLabel(QLabel):
         """兼容旧接口：按正式实例 id 选中。"""
         self.select_entity("formal", plant_id)
 
-    def set_selected_entity_class(self, class_id):
-        """修改选中对象的类别。"""
-        entity_kind, entity = self.get_selected_entity()
-        if not entity:
-            return False
-        class_id = max(0, min(len(self.class_names) - 1, int(class_id)))
-        entity["class_id"] = class_id
-        entity["class_name"] = self.class_names[class_id]
-        if entity_kind == "formal" and entity.get("source") in ("ai_accepted", "ai_assisted"):
-            entity["source"] = "ai_modified"
-            touch_instance(entity)
-        self.update_display()
-        return True
+    
 
-    def set_selected_entity_owner(self, owner_plant_id):
-        """修改选中对象归属。"""
-        entity_kind, entity = self.get_selected_entity()
-        if not entity:
-            return False
-        set_instance_owner(entity, self.plant_groups, owner_plant_id)
-        if entity_kind == "formal" and entity.get("source") in ("ai_accepted", "ai_assisted"):
-            entity["source"] = "ai_modified"
-            touch_instance(entity)
-        self.update_display()
-        return True
+    
 
     def accept_selected_candidate(self):
         """接受当前候选并转为正式实例。"""
@@ -288,15 +250,13 @@ class ImageLabel(QLabel):
         formal_instance = make_formal_instance(
             instance_id=self.current_plant_id,
             polygons=candidate.get("polygons", []),
-            class_names=self.class_names,
-            class_id=candidate.get("class_id", 0),
+            
             source="ai_accepted",
             origin_model_version=candidate.get("model_version"),
             origin_confidence=candidate.get("confidence"),
-            owner_plant_id=candidate.get("owner_plant_id"),
+
         )
-        if formal_instance.get("owner_plant_id") is not None:
-            set_instance_owner(formal_instance, self.plant_groups, formal_instance.get("owner_plant_id"))
+        
 
         self.plants.append(formal_instance)
         self.current_plant_id += 1
@@ -343,7 +303,7 @@ class ImageLabel(QLabel):
         self.update_display()
         return True
 
-    def save_current_polygon(self):
+    def save_current_polygon(self, label="stem"):
         """保存当前多边形到临时实例预览层。"""
         if self.is_summary:
             return False
@@ -365,6 +325,7 @@ class ImageLabel(QLabel):
             return False
 
         self.current_plant_polygons.append(unique_points)
+        self.current_plant_labels.append(label)  # 存储当前区域的 label
         self.current_points = []
         self.current_snap_point = None
         self.update_display()
@@ -453,9 +414,10 @@ class ImageLabel(QLabel):
 
         # 构建最终多边形列表：第一个为外轮廓，后续为内孔
         final_polygons = []
+        final_labels = []  # 存储每个区域的 label
         
         # 添加外轮廓（所有暂存区域）
-        for poly in self.current_plant_polygons:
+        for i, poly in enumerate(self.current_plant_polygons):
             if len(poly) >= 3:
                 # 确保多边形是闭合的
                 if poly[0] != poly[-1]:
@@ -464,6 +426,11 @@ class ImageLabel(QLabel):
                 if self._get_polygon_area(poly) > 0:
                     poly = poly[::-1]  # 反转顶点顺序
                 final_polygons.append(poly)
+                # 保存对应的 label
+                if i < len(self.current_plant_labels):
+                    final_labels.append(self.current_plant_labels[i])
+                else:
+                    final_labels.append("stem")
 
         # 添加内孔（所有去除区域）
         for removal_poly in self.removal_regions:
@@ -492,6 +459,8 @@ class ImageLabel(QLabel):
                             if self._get_polygon_area(intersection_poly) < 0:
                                 intersection_poly = intersection_poly[::-1]  # 反转顶点顺序
                             final_polygons.append(intersection_poly)
+                            # 内孔使用与外轮廓相同的 label
+                            final_labels.append(final_labels[i])
                         break  # 一个去除区域只关联一个外多边形
 
         # 如果最终多边形列表为空，返回失败
@@ -502,19 +471,22 @@ class ImageLabel(QLabel):
         new_instance = make_formal_instance(
             instance_id=self.current_plant_id,
             polygons=final_polygons,
-            class_names=self.class_names,
-            class_id=0,  # 暂时默认为0，后续可以从UI选择
+            
             source="manual",
             owner_plant_id=self.next_owner_plant_id,
         )
+
+        # 添加 label 信息
+        new_instance["labels"] = final_labels
 
         # 保存实例
         self.plants.append(new_instance)
         saved_id = self.current_plant_id
         self.current_plant_id += 1
 
-        # 清空当前暂存的多边形和去除区域
+        # 清空当前暂存的多边形、label 和去除区域
         self.current_plant_polygons = []
+        self.current_plant_labels = []
         self.removal_regions = []
 
         # 通知主窗口更新
@@ -581,6 +553,8 @@ class ImageLabel(QLabel):
                 return True
             if self.current_plant_polygons:
                 self.current_plant_polygons.pop()
+                if self.current_plant_labels:
+                    self.current_plant_labels.pop()
                 self.current_snap_point = None
                 self.update_display()
                 return True
@@ -1308,10 +1282,25 @@ class ImageLabel(QLabel):
                 temp_color = QColor(100, 200, 100, 120)
                 temp_painter.setBrush(QBrush(temp_color))
                 temp_painter.setPen(QPen(QColor(0, 150, 0), 2))
-                for polygon in self.current_plant_polygons:
+                for i, polygon in enumerate(self.current_plant_polygons):
                     if len(polygon) >= 3:
                         qpts = [img_to_screen(point) for point in polygon]
                         temp_painter.drawPolygon(*qpts)
+                        
+                        # 绘制区域 label
+                        if i < len(self.current_plant_labels):
+                            label = self.current_plant_labels[i]
+                            # 找到最后一个连线的中点（最后一个点和第一个点之间的连线）
+                            if len(polygon) >= 2:
+                                last_point = polygon[-2]  # 倒数第二个点，因为最后一个点和第一个点相同
+                                first_point = polygon[0]
+                                # 计算中点
+                                mid_x = (last_point[0] + first_point[0]) / 2
+                                mid_y = (last_point[1] + first_point[1]) / 2
+                                mid_point = img_to_screen((mid_x, mid_y))
+                                # 绘制文字
+                                temp_painter.setPen(QPen(QColor(0, 0, 0), 1))
+                                temp_painter.drawText(mid_point, label)
             
             # 绘制去除区域（挖空效果）
             if self.removal_regions:

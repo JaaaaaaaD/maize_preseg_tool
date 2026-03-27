@@ -209,8 +209,7 @@ class MainWindow(QMainWindow):
         panel = self.properties_panel
         panel.entity_selected.connect(self.on_tree_entity_selected)
         panel.class_changed.connect(self.on_selected_class_changed)
-        panel.owner_changed.connect(self.on_selected_owner_changed)
-        panel.create_group_requested.connect(self.create_and_assign_plant_group)
+        
         panel.btn_mark_completed.clicked.connect(self.mark_current_image_completed)
         panel.btn_mark_incomplete.clicked.connect(self.mark_current_image_incomplete)
         panel.btn_run_inference.clicked.connect(self.run_current_image_inference)
@@ -236,9 +235,7 @@ class MainWindow(QMainWindow):
             return
 
         self.project_id, self.project_metadata, self.project_paths = ensure_project_for_images(image_paths)
-        class_names = self.project_metadata.get("class_names", [])
-        self.left_label.set_class_names(class_names)
-        self.right_label.set_class_names(class_names)
+        
         self.training_manager.set_project(self.project_id)
         self.refresh_project_metadata()
         self.refresh_properties_panel()
@@ -279,12 +276,10 @@ class MainWindow(QMainWindow):
             annotation_state = self.left_label.get_annotation_state()
             annotation = {
                 "plants": annotation_state["plants"],
-                "plant_groups": annotation_state["plant_groups"],
                 "current_plant_id": annotation_state["current_plant_id"],
-                "next_plant_group_id": annotation_state["next_owner_plant_id"],
                 "ignored_regions": self.left_label.ignored_regions,
                 "image_state": self.current_image_state,
-                "class_names": self.left_label.class_names
+
             }
             self.coco_container[self.current_image_path] = annotation
         self.update_status_bar()
@@ -341,12 +336,10 @@ class MainWindow(QMainWindow):
             annotation_state = self.left_label.get_annotation_state()
             annotation = {
                 "plants": annotation_state["plants"],
-                "plant_groups": annotation_state["plant_groups"],
                 "current_plant_id": annotation_state["current_plant_id"],
-                "next_plant_group_id": annotation_state["next_owner_plant_id"],
                 "ignored_regions": self.left_label.ignored_regions,
                 "image_state": self.current_image_state,
-                "class_names": self.left_label.class_names
+
             }
             self.coco_container[self.current_image_path] = annotation
 
@@ -404,20 +397,17 @@ class MainWindow(QMainWindow):
                 self.coco_container[self.current_image_path] = annotation
 
         if annotation:
-            self.left_label.set_class_names(annotation.get("class_names", []))
-            self.right_label.set_class_names(annotation.get("class_names", []))
+            
             self.left_label.set_annotation_state(
                 annotation["plants"],
-                plant_groups=annotation.get("plant_groups"),
                 current_plant_id=annotation.get("current_plant_id", 1),
-                next_owner_plant_id=annotation.get("next_plant_group_id", 1),
             )
             # 设置忽略区域
             self.left_label.ignored_regions = annotation.get("ignored_regions", [])
             self.current_image_state = annotation.get("image_state", make_image_state(self.current_image_path))
             self.current_annotation_hash = annotation.get("annotation_hash")
         else:
-            self.left_label.set_annotation_state([], plant_groups=[], current_plant_id=1, next_owner_plant_id=1)
+            self.left_label.set_annotation_state([], current_plant_id=1)
             # 清空忽略区域
             self.left_label.ignored_regions = []
             self.current_image_state = make_image_state(self.current_image_path, annotation_completed=False)
@@ -582,7 +572,6 @@ class MainWindow(QMainWindow):
             dirty_count,
         )
         self.properties_panel.populate_instance_tree(
-            self.left_label.plant_groups,
             self.left_label.plants,
             self.left_label.candidate_instances,
         )
@@ -591,7 +580,6 @@ class MainWindow(QMainWindow):
             selected_kind,
             selected_entity,
             self.project_metadata.get("class_names", []) if self.project_metadata else [],
-            self.left_label.plant_groups,
         )
         if selected_kind and selected_entity:
             entity_id = selected_entity.get("id") if selected_kind == "formal" else selected_entity.get("candidate_id")
@@ -617,22 +605,6 @@ class MainWindow(QMainWindow):
                 self.mark_annotation_changed()
                 self.sync_summary_view()
             self.refresh_properties_panel()
-
-    def on_selected_owner_changed(self, owner_plant_id):
-        """属性面板修改所属植株组。"""
-        selected_kind, _ = self.left_label.get_selected_entity()
-        if self.left_label.set_selected_entity_owner(owner_plant_id):
-            if selected_kind == "formal":
-                self.mark_annotation_changed()
-            self.refresh_properties_panel()
-
-    def create_and_assign_plant_group(self):
-        """创建新的植株组并绑定到当前选中对象。"""
-        plant_group = self.left_label.create_plant_group()
-        self.left_label.set_selected_entity_owner(plant_group["plant_id"])
-        if self.left_label.selected_entity_kind == "formal":
-            self.mark_annotation_changed()
-        self.refresh_properties_panel()
 
     def on_training_state_changed(self, text):
         self.training_status_text = text
@@ -852,7 +824,9 @@ class MainWindow(QMainWindow):
                 self.mark_annotation_changed()
                 self.update_status_bar()
         else:
-            if self.left_label.save_current_polygon():
+            # 获取用户选择的 label
+            selected_label = self.combo_label.currentText()
+            if self.left_label.save_current_polygon(label=selected_label):
                 self.mark_annotation_changed()
                 self.update_status_bar()
 
@@ -958,326 +932,19 @@ class MainWindow(QMainWindow):
     def continue_annotation(self):
         """继续标注选中的植株。"""
         if not self.left_label.selected_entity_id:
-            QMessageBox.warning(self, "警告", "请先选择一个植株")
             return
-
-        # 加载选中植株的多边形到暂存区域
-        plant_id = self.left_label.selected_entity_id
-        plant = next((p for p in self.left_label.plants if int(p.get("id", 0)) == int(plant_id)), None)
-        if plant:
-            # 清空当前的暂存区域和去除区域
-            self.left_label.current_plant_polygons = []
-            self.left_label.removal_regions = []
-            
-            # 加载植株的多边形到暂存区域（只加载外轮廓）
-            polygons = plant.get("polygons", [])
-            for polygon in polygons:
-                # 只加载外轮廓（面积为负的多边形）
-                if self.left_label._get_polygon_area(polygon) <= 0:
-                    self.left_label.current_plant_polygons.append(polygon.copy())
-            
-            # 更新显示
-            self.left_label.update_display()
-            
-            # 同步右侧画布
-            self.sync_summary_view()
-            
-            # 通知主窗口更新coco容器
-            self.left_label._notify_annotation_changed()
-
-    def on_plant_selected(self, text):
-        if not text:
-            return
-        try:
-            parts = text.split()
-            if len(parts) < 2:
-                return
-            instance_id = int(parts[1])
-            if (
-                self.left_label.selected_entity_kind == "formal"
-                and int(self.left_label.selected_entity_id or 0) == instance_id
-            ):
-                return
-            self.left_label.select_entity("formal", instance_id)
-            self.refresh_properties_panel()
-        except (ValueError, IndexError):
-            return
+        self.left_label.select_entity("formal", self.left_label.selected_entity_id)
 
     def update_plant_list(self):
-        current_selected_id = None
-        if self.left_label.selected_entity_kind == "formal":
-            try:
-                current_selected_id = int(self.left_label.selected_entity_id)
-            except (TypeError, ValueError):
-                current_selected_id = None
+        """更新左侧植株选择下拉框。"""
+        if not hasattr(self, "combo_plants"):
+            return
 
-        self.combo_plants.blockSignals(True)
         self.combo_plants.clear()
         for plant in self.left_label.plants:
-            self.combo_plants.addItem(f"实例 {plant['id']} {plant.get('class_name', '')}")
-            if current_selected_id is not None and int(plant["id"]) == current_selected_id:
-                self.combo_plants.setCurrentIndex(self.combo_plants.count() - 1)
-        self.combo_plants.blockSignals(False)
-
-    def update_undo_redo_state(self):
-        can_undo = bool(
-            self.undo_stack
-            or self.left_label.current_points
-            or self.left_label.current_plant_polygons
-        )
-        self.btn_undo.setEnabled(can_undo)
-
-    def push_undo_action(self, action_type, data):
-        if self.is_undo_redo:
-            return
-        self.undo_stack.append({"type": action_type, "data": copy.deepcopy(data)})
-        self.redo_stack.clear()
-        self.update_undo_redo_state()
-
-    def clear_undo_stack(self):
-        self.undo_stack.clear()
-        self.redo_stack.clear()
-        self.update_undo_redo_state()
-
-    def export_annotated_images(self):
-        """批量导出已完成的标注"""
-        if not self.project_id:
-            QMessageBox.warning(self, "警告", "当前没有活动项目")
-            return
-        
-        # 筛选已完成的图片
-        completed_images = []
-        for image_path in self.image_paths:
-            if image_path in self.coco_container:
-                state = self.coco_container[image_path].get("image_state", {})
-                if state.get("annotation_completed"):
-                    completed_images.append(image_path)
-            else:
-                # 尝试从文件加载状态
-                base_name = os.path.splitext(os.path.basename(image_path))[0]
-                coco_path = os.path.join(self.save_path or os.getcwd(), f"{base_name}_coco.json")
-                annotation = load_annotation_from_coco(coco_path)
-                if annotation and annotation.get("image_state", {}).get("annotation_completed"):
-                    completed_images.append(image_path)
-                    self.coco_container[image_path] = annotation
-        
-        if not completed_images:
-            QMessageBox.warning(self, "警告", "当前没有已完成的图片")
-            return
-        
-        # 让用户选择导出目录
-        default_dir = self.export_path or os.path.join(os.getcwd(), f"completed_export_{current_timestamp()}")
-        export_dir = QFileDialog.getExistingDirectory(
-            self, "选择导出目录", default_dir
-        )
-        
-        if not export_dir:
-            return  # 用户取消选择
-        
-        # 记忆导出路径
-        self.export_path = export_dir
-        
-        # 创建进度对话框
-        progress = QProgressDialog("正在批量导出标注...", "取消", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setValue(0)
-        progress.show()
-        
-        # 定义进度回调函数
-        def progress_callback(current, total, message):
-            progress.setValue(int(current / total * 100))
-            progress.setLabelText(message)
-            QApplication.processEvents()
-            return not progress.wasCanceled()
-        
-        # 执行批量导出
-        result = batch_export_annotations(
-            completed_images,
-            export_dir,
-            project_id=self.project_id,
-            progress_callback=progress_callback,
-            coco_container=self.coco_container
-        )
-        
-        progress.close()
-        
-        # 显示导出结果
-        result_text = f"批量导出完成：\n"
-        result_text += f"成功导出: {result['exported']}\n"
-        result_text += f"错误: {result['errors']}\n"
-        QMessageBox.information(self, "批量导出完成", result_text)
-
-    def import_batch_data(self):
-        """批量导入数据到当前项目"""
-        if not self.project_id:
-            QMessageBox.warning(self, "警告", "当前没有活动项目")
-            return
-        
-        if not self.image_paths:
-            QMessageBox.warning(self, "警告", "请先加载图片")
-            return
-        
-        # 让用户选择导入目录
-        import_dir = QFileDialog.getExistingDirectory(
-            self, "选择导入目录", self.import_path or ""
-        )
-        
-        if not import_dir:
-            return  # 用户取消选择
-        
-        # 记忆导入路径
-        self.import_path = import_dir
-        
-        # 让用户选择冲突处理策略
-        msg_box = QMessageBox()
-        msg_box.setWindowTitle("冲突处理策略")
-        msg_box.setText("请选择标注冲突处理策略：")
-        msg_box.addButton("跳过", QMessageBox.YesRole)
-        msg_box.addButton("覆盖", QMessageBox.NoRole)
-        msg_box.addButton("取消", QMessageBox.RejectRole)
-        
-        reply = msg_box.exec_()
-        if reply == 2:  # 取消
-            return
-        
-        conflict_strategy = "skip" if reply == 0 else "overwrite"
-        
-        # 创建进度对话框
-        progress = QProgressDialog("正在批量导入标注...", "取消", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setValue(0)
-        progress.show()
-        
-        # 定义进度回调函数
-        def progress_callback(current, total, message):
-            progress.setValue(int(current / total * 100))
-            progress.setLabelText(message)
-            QApplication.processEvents()
-            return not progress.wasCanceled()
-        
-        # 调用批量导入函数
-        result = batch_import_annotations(
-            import_dir,
-            self.image_paths,
-            self.project_id,
-            conflict_strategy=conflict_strategy,
-            progress_callback=progress_callback
-        )
-        
-        # 处理临时COCO容器，与当前容器和图像索引对比
-        temp_coco_container = result.get("temp_coco_container", {})
-        for image_path, annotation in temp_coco_container.items():
-            # 检查图像索引是否一致
-            if image_path in self.image_paths:
-                # 索引一致，覆盖当前容器中的数据
-                self.coco_container[image_path] = annotation
-                
-                # 如果当前显示的就是这张图片，更新显示的标注状态
-                if image_path == self.current_image_path:
-                    self.load_annotation_from_coco_container()
-        
-        progress.close()
-        
-        # 显示导入结果
-        result_text = f"批量导入完成：\n"
-        result_text += f"成功导入: {result['imported']}\n"
-        result_text += f"跳过: {result['skipped']}\n"
-        result_text += f"错误: {result['errors']}\n"
-        QMessageBox.information(self, "批量导入完成", result_text)
-
-    def export_yolo_dataset(self):
-        """导出为 YOLO 格式数据集。"""
-        if not self.project_id:
-            QMessageBox.warning(self, "警告", "当前没有活动项目")
-            return
-
-        # 让用户选择导出目录
-        default_dir = self.export_path or os.path.join(os.getcwd(), f"yolo_export_{current_timestamp()}")
-        export_dir = QFileDialog.getExistingDirectory(
-            self, "选择导出目录", default_dir
-        )
-        if not export_dir:
-            return
-
-        # 记忆导出路径
-        self.export_path = export_dir
-
-        # 显示进度对话框
-        progress = QProgressDialog("正在导出 YOLO 数据集...", "取消", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setValue(0)
-        progress.show()
-
-        # 定义进度回调
-        def progress_callback(current, total, message):
-            progress.setValue(int(current / total * 100))
-            progress.setLabelText(message)
-            QApplication.processEvents()
-            return not progress.wasCanceled()
-
-        # 构建数据集
-        try:
-            result = build_project_dataset(
-                self.project_id,
-                rebuild_split=False,
-                dataset_root=export_dir
-            )
-
-            progress.close()
-
-            QMessageBox.information(
-                self,
-                "导出成功",
-                f"YOLO 数据集导出成功！\n保存在: {result['dataset_root']}"
-            )
-        except Exception as e:
-            progress.close()
-            QMessageBox.warning(
-                self,
-                "导出失败",
-                f"导出失败: {str(e)}"
-            )
-
-    def start_manual_training(self):
-        """手动触发一次训练。"""
-        if not self.project_id:
-            QMessageBox.warning(self, "警告", "当前没有活动项目")
-            return
-        
-        # 显示确认对话框
-        reply = QMessageBox.question(
-            self,
-            "开始训练",
-            "确定要开始训练吗？\n训练过程可能会持续一段时间。",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            self.training_manager.start_training()
-
-    def rollback_active_model(self):
-        """回滚到上一个模型版本。"""
-        if not self.project_id:
-            QMessageBox.warning(self, "警告", "当前没有活动项目")
-            return
-        
-        success, message = self.training_manager.rollback_model()
-        if success:
-            QMessageBox.information(self, "成功", message)
-        else:
-            QMessageBox.warning(self, "失败", message)
-
-    def rebuild_validation_split(self):
-        """重新划分验证集。"""
-        if not self.project_id:
-            QMessageBox.warning(self, "警告", "当前没有活动项目")
-            return
-        
-        success, message = self.training_manager.rebuild_validation_split()
-        if success:
-            QMessageBox.information(self, "成功", message)
-        else:
-            QMessageBox.warning(self, "失败", message)
+            class_id = plant.get("class_id", 0)
+            class_name = self.project_metadata.get("class_names", ["未知"])[class_id] if self.project_metadata else "未知"
+            self.combo_plants.addItem(f"{class_name} {plant['id']}", plant['id'])
 
     def sync_summary_view(self):
         """同步右侧总览视图。"""
@@ -1286,14 +953,11 @@ class MainWindow(QMainWindow):
 
         # 复制左侧标注状态到右侧
         plants = copy.deepcopy(self.left_label.plants)
-        plant_groups = copy.deepcopy(self.left_label.plant_groups)
         ignored_regions = copy.deepcopy(self.left_label.ignored_regions)
 
         self.right_label.set_annotation_state(
             plants,
-            plant_groups=plant_groups,
             current_plant_id=self.left_label.current_plant_id,
-            next_owner_plant_id=self.left_label.next_owner_plant_id,
         )
         self.right_label.ignored_regions = ignored_regions
         
@@ -1330,16 +994,227 @@ class MainWindow(QMainWindow):
         if self.annotation_changed:
             status_parts.append("⚠ 有未保存修改")
 
-        # 边缘吸附状态
-        if hasattr(self, "left_label") and hasattr(self.left_label, "edge_snap_enabled"):
-            status_parts.append(f"边缘吸附: {'开启' if self.left_label.edge_snap_enabled else '关闭'}")
+        # 区域生长
+        if self.region_growing_enabled:
+            status_parts.append("膨胀点选模式")
+
+        # 忽略区域
+        if self.ignoring_region:
+            status_parts.append("忽略区域模式")
+
+        # 去除区域
+        if self.left_label.removing_region:
+            status_parts.append("去除区域模式")
+
+        # 边缘吸附
+        if self.left_label.edge_snap_enabled:
+            status_parts.append("边缘吸附: 开启")
+        else:
+            status_parts.append("边缘吸附: 关闭")
+
+        # 投影框
+        if getattr(self, 'projection_enabled', False):
+            status_parts.append("投影框: 开启")
+        else:
+            status_parts.append("投影框: 关闭")
+
+        # AI辅助
+        if getattr(self, 'ai_assist_enabled', True):
+            status_parts.append("AI辅助: 开启")
+        else:
+            status_parts.append("AI辅助: 关闭")
 
         # 训练状态
         if self.training_status_text:
             status_parts.append(f"训练: {self.training_status_text}")
 
-        status_text = " | ".join(status_parts)
-        self.statusBar().showMessage(status_text)
+        self.statusBar().showMessage(" | ".join(status_parts))
+
+    def push_undo_action(self, action_type, data):
+        """推送撤销操作。"""
+        if self.is_undo_redo:
+            return
+        self.undo_stack.append({"type": action_type, "data": data})
+        self.redo_stack.clear()
+        self.update_undo_redo_state()
+
+    def clear_undo_stack(self):
+        """清空撤销栈。"""
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.update_undo_redo_state()
+
+    def update_undo_redo_state(self):
+        """更新撤销/重做按钮状态。"""
+        pass
+
+    def start_manual_training(self):
+        """手动启动训练。"""
+        if not self.project_id:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+        if not self.training_manager.has_active_model():
+            QMessageBox.warning(self, "警告", "当前项目暂无模型，无法训练")
+            return
+        self.training_manager.start_training()
+
+    def rollback_active_model(self):
+        """回退到上一个模型。"""
+        if not self.project_id:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+        if not self.training_manager.has_active_model():
+            QMessageBox.warning(self, "警告", "当前项目暂无模型，无法回退")
+            return
+        success, message = self.training_manager.rollback_model()
+        if success:
+            QMessageBox.information(self, "回退成功", message)
+        else:
+            QMessageBox.warning(self, "回退失败", message)
+
+    def rebuild_validation_split(self):
+        """重建验证集。"""
+        if not self.project_id:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+        success, message = build_project_dataset(self.project_id, rebuild_split=True)
+        if success:
+            QMessageBox.information(self, "重建成功", message)
+        else:
+            QMessageBox.warning(self, "重建失败", message)
+
+    def import_batch_data(self):
+        """批量导入COCO数据。"""
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择包含COCO文件的目录", self.import_path or ""
+        )
+        if not directory:
+            return
+
+        # 记忆导入路径
+        self.import_path = directory
+
+        try:
+            imported_count, skipped_count, error_count = batch_import_annotations(
+                directory, self.image_paths, self.coco_container
+            )
+
+            # 导入后刷新当前图片的标注
+            if self.current_image_path:
+                self.load_annotation_from_coco_container()
+                self.sync_summary_view()
+                self.update_plant_list()
+                self.refresh_properties_panel()
+
+            message = f"导入完成：成功 {imported_count}，跳过 {skipped_count}，错误 {error_count}"
+            QMessageBox.information(self, "导入结果", message)
+        except Exception as error:
+            QMessageBox.critical(self, "导入失败", f"导入过程中发生错误: {error}")
+            traceback.print_exc()
+
+    def export_yolo_dataset(self):
+        """导出项目为YOLO数据集。"""
+        if not self.project_id:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择导出目录", self.export_path or ""
+        )
+        if not directory:
+            return
+
+        # 记忆导出路径
+        self.export_path = directory
+
+        try:
+            success, message = build_project_dataset(
+                self.project_id, export_dir=directory, format="yolo"
+            )
+            if success:
+                QMessageBox.information(self, "导出成功", message)
+            else:
+                QMessageBox.warning(self, "导出失败", message)
+        except Exception as error:
+            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误: {error}")
+            traceback.print_exc()
+
+    def export_annotated_images(self):
+        """批量导出已完成图片为COCO格式。"""
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择导出目录", self.export_path or ""
+        )
+        if not directory:
+            return
+
+        # 记忆导出路径
+        self.export_path = directory
+
+        try:
+            exported_count, skipped_count, error_count = batch_export_annotations(
+                directory, self.image_paths, self.coco_container, self.project_metadata.get("class_names", [])
+            )
+            message = f"导出完成：成功 {exported_count}，跳过 {skipped_count}，错误 {error_count}"
+            QMessageBox.information(self, "导出结果", message)
+        except Exception as error:
+            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误: {error}")
+            traceback.print_exc()
+
+    def redo(self):
+        """重做操作。"""
+        if self.left_label.redo_last_action():
+            self.mark_annotation_changed()
+            self.update_undo_redo_state()
+            return
+        if not self.redo_stack:
+            return
+
+        self.is_undo_redo = True
+        try:
+            action = self.redo_stack.pop()
+            if action["type"] == "add_instance":
+                instance = copy.deepcopy(action["data"])
+                self.left_label.plants.append(instance)
+                self.left_label.plants.sort(key=lambda item: item["id"])
+                self.undo_stack.append(action)
+            elif action["type"] == "delete_instance":
+                instance = action["data"]
+                self.left_label.delete_plant(instance["id"])
+                self.undo_stack.append(action)
+
+            self.sync_summary_view()
+            self.update_plant_list()
+            self.update_undo_redo_state()
+            self.mark_annotation_changed()
+            self.refresh_properties_panel()
+        finally:
+            self.is_undo_redo = False
+
+    def closeEvent(self, event):
+        """关闭窗口事件。"""
+        if self.annotation_changed:
+            reply = QMessageBox.question(
+                self,
+                "未保存修改",
+                "当前图片有未保存的修改，是否保存？",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            )
+            if reply == QMessageBox.Cancel:
+                event.ignore()
+                return
+            elif reply == QMessageBox.Yes:
+                # 保存当前图片的标注
+                if self.current_image_path:
+                    annotation_state = self.left_label.get_annotation_state()
+                    annotation = {
+                        "plants": annotation_state["plants"],
+                        "current_plant_id": annotation_state["current_plant_id"],
+                        "ignored_regions": self.left_label.ignored_regions,
+                        "image_state": self.current_image_state,
+                    }
+                    self.coco_container[self.current_image_path] = annotation
+
+        event.accept()
 
 
 if __name__ == "__main__":
