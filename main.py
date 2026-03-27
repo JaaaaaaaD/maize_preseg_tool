@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(SHORTCUTS["SAVE_POLYGON"]), self, self.save_current_polygon)
         QShortcut(QKeySequence(SHORTCUTS["SAVE_PLANT"]), self, self.save_plant)
         QShortcut(QKeySequence(SHORTCUTS["UNDO"]), self, self.undo)
+        QShortcut(QKeySequence(SHORTCUTS["REDO"]), self, self.redo)
         QShortcut(QKeySequence(SHORTCUTS["DELETE_PLANT"]), self, self.delete_plant)
         QShortcut(QKeySequence(SHORTCUTS["TOGGLE_EDGE_SNAP"]), self, self.toggle_edge_snap)
         QShortcut(QKeySequence(SHORTCUTS["LOAD_BATCH"]), self, self.load_batch_images)
@@ -968,6 +969,36 @@ class MainWindow(QMainWindow):
         finally:
             self.is_undo_redo = False
 
+    def redo(self):
+        """重做上一步操作。"""
+        if self.left_label.redo_last_action():
+            self.mark_annotation_changed()
+            self.update_undo_redo_state()
+            return
+        if not self.redo_stack:
+            return
+
+        self.is_undo_redo = True
+        try:
+            action = self.redo_stack.pop()
+            if action["type"] == "add_instance":
+                instance = copy.deepcopy(action["data"])
+                self.left_label.plants.append(instance)
+                self.left_label.plants.sort(key=lambda item: item["id"])
+                self.undo_stack.append(action)
+            elif action["type"] == "delete_instance":
+                instance = action["data"]
+                self.left_label.delete_plant(instance["id"])
+                self.undo_stack.append(action)
+
+            self.sync_summary_view()
+            self.update_plant_list()
+            self.update_undo_redo_state()
+            self.mark_annotation_changed()
+            self.refresh_properties_panel()
+        finally:
+            self.is_undo_redo = False
+
     def delete_plant(self):
         """删除当前选中正式实例或候选实例。"""
         selected_kind, selected_entity = self.left_label.get_selected_entity()
@@ -990,6 +1021,16 @@ class MainWindow(QMainWindow):
             self.sync_summary_view()
             self.update_plant_list()
             self.update_undo_redo_state()
+            self.refresh_properties_panel()
+            self.update_status_bar()
+
+    def undo_delete_plant(self):
+        """撤销删除植株操作。"""
+        undone = self.left_label.undo_delete_plant()
+        if undone:
+            self.mark_annotation_changed()
+            self.sync_summary_view()
+            self.update_plant_list()
             self.refresh_properties_panel()
             self.update_status_bar()
 
@@ -1110,7 +1151,17 @@ class MainWindow(QMainWindow):
 
     def update_undo_redo_state(self):
         """更新撤销/重做按钮状态。"""
-        pass
+        # 检查撤销按钮状态
+        if hasattr(self, 'btn_undo'):
+            # 检查是否有可撤销的操作
+            has_undo = bool(self.undo_stack) or bool(self.left_label.main_stack) or bool(self.left_label.ignore_stack)
+            self.btn_undo.setEnabled(has_undo)
+        
+        # 检查重做按钮状态
+        if hasattr(self, 'btn_redo'):
+            # 检查是否有可重做的操作
+            has_redo = bool(self.redo_stack) or bool(self.left_label.redo_main_stack) or bool(self.left_label.redo_ignore_stack)
+            self.btn_redo.setEnabled(has_redo)
 
     def start_manual_training(self):
         """手动启动训练。"""

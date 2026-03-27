@@ -76,6 +76,10 @@ class Toolbars:
         parent.btn_undo.clicked.connect(parent.undo)
         annotate_layout.addWidget(parent.btn_undo)
 
+        parent.btn_redo = QPushButton(f"重做 ({SHORTCUTS['REDO']})")
+        parent.btn_redo.clicked.connect(parent.redo)
+        annotate_layout.addWidget(parent.btn_redo)
+
         return annotate_group
     
     @staticmethod
@@ -142,6 +146,10 @@ class Toolbars:
         parent.btn_continue_annotation = QPushButton("继续标注选中植株")
         parent.btn_continue_annotation.clicked.connect(parent.continue_annotation)
         plant_layout.addWidget(parent.btn_continue_annotation)
+
+        parent.btn_undo_delete = QPushButton("撤销删除植株")
+        parent.btn_undo_delete.clicked.connect(parent.undo_delete_plant)
+        plant_layout.addWidget(parent.btn_undo_delete)
 
         return plant_group
     

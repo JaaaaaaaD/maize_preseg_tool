@@ -40,7 +40,7 @@ ROI_SIZE = 8  # ROI区域大小
 # 移除maize_annotations相关配置，使用临时目录或用户指定目录
 
 # 项目级配置
-DEFAULT_CLASS_NAMES = ["plant", "stem", "leaf", "ear"]
+DEFAULT_CLASS_NAMES = ["stem", "leaf", "ear"]
 DEFAULT_CLASS_ID = 0
 AUTO_TRAIN_THRESHOLD = 5
 FIXED_VAL_RATIO = 0.2
@@ -65,6 +65,7 @@ SHORTCUTS = {
     "SAVE_POLYGON": "Return",
     "SAVE_PLANT": "Shift+Return",
     "UNDO": "Ctrl+Z",
+    "REDO": "Ctrl+Y",
     "DELETE_PLANT": "Delete",
     "TOGGLE_EDGE_SNAP": "Shift",
     "LOAD_BATCH": "Ctrl+Shift+O",

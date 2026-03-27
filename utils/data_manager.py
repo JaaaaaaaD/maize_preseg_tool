@@ -90,7 +90,6 @@ def save_annotation_manually(
             image_height,
             class_names=class_names,
             ignored_regions=ignored_regions,
-            plant_groups=plant_groups,
             image_state=image_state,
             current_plant_id=current_plant_id,
             project_id=project_id
@@ -123,7 +122,6 @@ def save_annotation_manually(
             image_path,
             plants,
             current_plant_id or 1,
-            plant_groups=plant_groups,
             image_state=image_state,
             project_id=project_id,
             class_names=class_names,
@@ -270,11 +268,14 @@ def _build_coco_format(
         width = max(x_coords) - x_min
         height = max(y_coords) - y_min
 
+        # 获取实例下属部位的 label 列表
+        labels = plant.get("labels", [])
+
         coco_data["annotations"].append(
             {
                 "id": annotation_id,
                 "image_id": image_id,
-                "category_id": 1,  # 默认类别
+                "category_id": -1,  # 实例本身不带有 label，使用 -1 作为 none 占位
                 "segmentation": segmentation,
                 "area": float(total_area),
                 "bbox": [x_min, y_min, width, height],
@@ -283,6 +284,7 @@ def _build_coco_format(
                     "instance_id": plant.get("id", 0),
                     "source": plant.get("source"),
                     "owner_plant_id": plant.get("owner_plant_id"),
+                    "labels": labels,  # 存储实例下属部位的 label 列表
                 },
             }
         )
@@ -382,7 +384,8 @@ def load_annotation_from_coco(coco_path, class_names=None):
                     "area": ann.get("area", 0),
                     "iscrowd": ann.get("iscrowd", 0),
                     "source": ann.get("attributes", {}).get("source"),
-                    "owner_plant_id": ann.get("attributes", {}).get("owner_plant_id")
+                    "owner_plant_id": ann.get("attributes", {}).get("owner_plant_id"),
+                    "labels": ann.get("attributes", {}).get("labels", [])
                 }
                 plants.append(plant)
         
@@ -582,7 +585,6 @@ def batch_export_annotations(
                     export_path,
                     class_names=class_names or annotation.get("class_names"),
                     ignored_regions=annotation.get("ignored_regions"),
-                    plant_groups=annotation.get("plant_groups"),
                     image_state=annotation.get("image_state"),
                     current_plant_id=annotation.get("current_plant_id")
                 )
@@ -604,13 +606,13 @@ def batch_export_annotations(
 def batch_import_annotations(
     import_dir,
     image_paths,
-    project_id,
+    coco_container=None,
     conflict_strategy="skip",
     progress_callback=None
 ):
     """批量导入COCO格式标注。"""
     if not import_dir or not image_paths:
-        return {"imported": 0, "skipped": 0, "errors": 0}
+        return 0, 0, 0
 
     try:
         imported_count = 0
@@ -620,9 +622,6 @@ def batch_import_annotations(
 
         # 收集所有COCO文件
         coco_files = [f for f in os.listdir(import_dir) if f.endswith(".json")]
-        
-        # 创建临时COCO容器
-        temp_coco_container = {}
 
         for i, image_path in enumerate(image_paths):
             if progress_callback and not progress_callback(i + 1, total, f"导入: {os.path.basename(image_path)}"):
@@ -649,15 +648,16 @@ def batch_import_annotations(
                     error_count += 1
                     continue
 
-                # 将标注数据存储到临时COCO容器
-                temp_coco_container[image_path] = annotation
+                # 将标注数据存储到COCO容器
+                if coco_container is not None:
+                    coco_container[image_path] = annotation
                 imported_count += 1
 
             except Exception as e:
                 print(f"导入 {image_path} 失败: {e}")
                 error_count += 1
 
-        return {"imported": imported_count, "skipped": skipped_count, "errors": error_count, "temp_coco_container": temp_coco_container}
+        return imported_count, skipped_count, error_count
     except Exception as error:
         print(f"批量导入失败: {error}")
-        return {"imported": 0, "skipped": 0, "errors": len(image_paths), "temp_coco_container": {}}
+        return 0, 0, len(image_paths)

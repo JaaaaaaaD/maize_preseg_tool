@@ -162,6 +162,7 @@ def normalize_formal_instance(instance, fallback_id):
         "confirmed": bool(instance.get("confirmed", True)),
         "created_at": created_at,
         "updated_at": updated_at,
+        "labels": instance.get("labels", []),
     }
     return normalized
 

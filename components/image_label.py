@@ -60,6 +60,7 @@ class ImageLabel(QLabel):
         self.current_plant_id = 1
         self.selected_plant_id = None
         self.next_owner_plant_id = None
+        self.delete_plant_stack = []  # 存储删除植株的操作，深度为2
 
         self.candidate_instances = []
         self.selected_entity_kind = None
@@ -98,6 +99,9 @@ class ImageLabel(QLabel):
         # 操作栈
         self.main_stack = []  # 标注区域和去除区域共用的栈
         self.ignore_stack = []  # 忽略区域操作栈
+        self.redo_main_stack = []  # 标注区域和去除区域共用的redo栈
+        self.redo_ignore_stack = []  # 忽略区域操作的redo栈
+        self.max_stack_depth = 20  # 栈深度限制
 
     
 
@@ -271,6 +275,7 @@ class ImageLabel(QLabel):
 
     def delete_selected_entity(self):
         """删除当前选中候选或正式实例。"""
+        deleted_plant = None
         if self.selected_entity_kind == "candidate":
             before = len(self.candidate_instances)
             self.candidate_instances = [
@@ -278,9 +283,19 @@ class ImageLabel(QLabel):
             ]
             deleted = len(self.candidate_instances) != before
         elif self.selected_entity_kind == "formal":
+            # 找到要删除的植株
+            for plant in self.plants:
+                if int(plant.get("id", 0)) == int(self.selected_entity_id):
+                    deleted_plant = plant.copy()
+                    break
             before = len(self.plants)
             self.plants = [item for item in self.plants if int(item.get("id", 0)) != int(self.selected_entity_id)]
             deleted = len(self.plants) != before
+            # 将删除的植株信息存入栈，限制深度为2
+            if deleted and deleted_plant:
+                self.delete_plant_stack.append(deleted_plant)
+                if len(self.delete_plant_stack) > 2:
+                    self.delete_plant_stack.pop(0)
         else:
             deleted = False
 
@@ -294,7 +309,18 @@ class ImageLabel(QLabel):
     def delete_plant(self, plant_id):
         """兼容旧接口：删除正式实例。"""
         plant_id = int(plant_id)
+        # 找到要删除的植株
+        deleted_plant = None
+        for plant in self.plants:
+            if int(plant.get("id", 0)) == plant_id:
+                deleted_plant = plant.copy()
+                break
         self.plants = [plant for plant in self.plants if int(plant.get("id", 0)) != plant_id]
+        # 将删除的植株信息存入栈，限制深度为2
+        if deleted_plant:
+            self.delete_plant_stack.append(deleted_plant)
+            if len(self.delete_plant_stack) > 2:
+                self.delete_plant_stack.pop(0)
         if self.selected_plant_id == plant_id:
             self.selected_plant_id = None
         if self.selected_entity_kind == "formal" and int(self.selected_entity_id or 0) == plant_id:
@@ -303,8 +329,40 @@ class ImageLabel(QLabel):
         self.update_display()
         return True
 
+    def undo_delete_plant(self):
+        """撤销删除植株操作。"""
+        if self.delete_plant_stack:
+            # 弹出最后删除的植株
+            deleted_plant = self.delete_plant_stack.pop()
+            # 将植株添加回列表
+            self.plants.append(deleted_plant)
+            # 更新显示
+            self.update_display()
+            return True
+        return False
+
     def save_current_polygon(self, label="stem"):
         """保存当前多边形到临时实例预览层。"""
+        # 检查图片状态是否为已完成
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, 'current_image_state'):
+            if main_win.current_image_state.get('annotation_completed', False):
+                from PyQt5.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    main_win,
+                    "图片已完成标注",
+                    "此图片已标记为完成标注。是否取消已完成状态并继续标注？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.No:
+                    return False
+                else:
+                    # 取消已完成状态
+                    main_win.current_image_state['annotation_completed'] = False
+                    main_win.mark_annotation_changed()
+                    main_win.update_status_bar()
+        
         if self.is_summary:
             return False
         if len(self.current_points) < 3:
@@ -373,6 +431,26 @@ class ImageLabel(QLabel):
 
     def save_current_removal_region(self):
         """保存当前去除区域。"""
+        # 检查图片状态是否为已完成
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, 'current_image_state'):
+            if main_win.current_image_state.get('annotation_completed', False):
+                from PyQt5.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    main_win,
+                    "图片已完成标注",
+                    "此图片已标记为完成标注。是否取消已完成状态并继续标注？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.No:
+                    return False
+                else:
+                    # 取消已完成状态
+                    main_win.current_image_state['annotation_completed'] = False
+                    main_win.mark_annotation_changed()
+                    main_win.update_status_bar()
+        
         if self.is_summary:
             return False
         if len(self.current_removal_points) < 3:
@@ -519,9 +597,30 @@ class ImageLabel(QLabel):
                 if self.ignore_stack:
                     last_action = self.ignore_stack.pop()
                     if last_action['action'] == 'add_point':
+                        # 保存当前状态到redo栈
+                        current_state = {
+                            'action': 'add_point',
+                            'points': self.current_ignored_points.copy()
+                        }
+                        self.redo_ignore_stack.append(current_state)
+                        # 限制栈深度
+                        if len(self.redo_ignore_stack) > self.max_stack_depth:
+                            self.redo_ignore_stack.pop(0)
+                        
                         self.current_ignored_points = last_action['points']
                 else:
-                    self.current_ignored_points.pop()
+                    # 保存当前状态到redo栈
+                    if self.current_ignored_points:
+                        current_state = {
+                            'action': 'add_point',
+                            'points': self.current_ignored_points.copy()
+                        }
+                        self.redo_ignore_stack.append(current_state)
+                        # 限制栈深度
+                        if len(self.redo_ignore_stack) > self.max_stack_depth:
+                            self.redo_ignore_stack.pop(0)
+                        
+                        self.current_ignored_points.pop()
                 self.current_snap_point = None
                 self.update_display()
                 return True
@@ -529,6 +628,16 @@ class ImageLabel(QLabel):
             elif self.ignore_stack:
                 last_action = self.ignore_stack.pop()
                 if last_action['action'] == 'save_region':
+                    # 保存当前状态到redo栈
+                    current_state = {
+                        'action': 'save_region',
+                        'regions': self.ignored_regions.copy()
+                    }
+                    self.redo_ignore_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.redo_ignore_stack) > self.max_stack_depth:
+                        self.redo_ignore_stack.pop(0)
+                    
                     self.ignored_regions = last_action['regions']
                     self.update_display()
                     return True
@@ -539,6 +648,18 @@ class ImageLabel(QLabel):
                 
                 # 处理暂存区域保存操作的撤销
                 if last_action['action'] == 'save_polygon':
+                    # 保存当前状态到redo栈
+                    current_state = {
+                        'action': 'save_polygon',
+                        'current_points': self.current_points.copy(),
+                        'current_plant_polygons': [poly.copy() for poly in self.current_plant_polygons],
+                        'current_plant_labels': self.current_plant_labels.copy()
+                    }
+                    self.redo_main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.redo_main_stack) > self.max_stack_depth:
+                        self.redo_main_stack.pop(0)
+                    
                     # 恢复到保存前的状态，包括恢复current_points
                     self.current_points = last_action['current_points']
                     self.current_plant_polygons = last_action['current_plant_polygons']
@@ -549,6 +670,17 @@ class ImageLabel(QLabel):
                 
                 # 处理去除区域保存操作的撤销
                 elif last_action['action'] == 'save_removal_region':
+                    # 保存当前状态到redo栈
+                    current_state = {
+                        'action': 'save_removal_region',
+                        'regions': [poly.copy() for poly in self.removal_regions],
+                        'current_removal_points': self.current_removal_points.copy()
+                    }
+                    self.redo_main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.redo_main_stack) > self.max_stack_depth:
+                        self.redo_main_stack.pop(0)
+                    
                     self.removal_regions = last_action['regions']
                     self.current_removal_points = last_action['current_removal_points']
                     self.current_snap_point = None
@@ -557,6 +689,16 @@ class ImageLabel(QLabel):
                 
                 # 处理添加标注点操作的撤销
                 elif last_action['action'] == 'add_point':
+                    # 保存当前状态到redo栈
+                    current_state = {
+                        'action': 'add_point',
+                        'points': self.current_points.copy()
+                    }
+                    self.redo_main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.redo_main_stack) > self.max_stack_depth:
+                        self.redo_main_stack.pop(0)
+                    
                     self.current_points = last_action['points']
                     self.current_snap_point = None
                     self.update_display()
@@ -564,6 +706,16 @@ class ImageLabel(QLabel):
                 
                 # 处理添加去除区域点操作的撤销
                 elif last_action['action'] == 'add_removal_point':
+                    # 保存当前状态到redo栈
+                    current_state = {
+                        'action': 'add_removal_point',
+                        'points': self.current_removal_points.copy()
+                    }
+                    self.redo_main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.redo_main_stack) > self.max_stack_depth:
+                        self.redo_main_stack.pop(0)
+                    
                     self.current_removal_points = last_action['points']
                     self.current_snap_point = None
                     self.update_display()
@@ -572,11 +724,31 @@ class ImageLabel(QLabel):
             # 现在所有点添加操作都通过栈记录，不需要直接操作当前点列表
             # 如果栈为空且当前有点，则直接清空（处理可能的边界情况）
             if self.removing_region and self.current_removal_points and not self.main_stack:
+                # 保存当前状态到redo栈
+                current_state = {
+                    'action': 'add_removal_point',
+                    'points': self.current_removal_points.copy()
+                }
+                self.redo_main_stack.append(current_state)
+                # 限制栈深度
+                if len(self.redo_main_stack) > self.max_stack_depth:
+                    self.redo_main_stack.pop(0)
+                
                 self.current_removal_points = []
                 self.current_snap_point = None
                 self.update_display()
                 return True
             elif not self.removing_region and self.current_points and not self.main_stack:
+                # 保存当前状态到redo栈
+                current_state = {
+                    'action': 'add_point',
+                    'points': self.current_points.copy()
+                }
+                self.redo_main_stack.append(current_state)
+                # 限制栈深度
+                if len(self.redo_main_stack) > self.max_stack_depth:
+                    self.redo_main_stack.pop(0)
+                
                 self.current_points = []
                 self.current_snap_point = None
                 self.update_display()
@@ -584,11 +756,143 @@ class ImageLabel(QLabel):
 
         # 忽略区域的通用撤销
         if self.ignored_regions:
+            # 保存当前状态到redo栈
+            current_state = {
+                'action': 'save_region',
+                'regions': self.ignored_regions.copy()
+            }
+            self.redo_ignore_stack.append(current_state)
+            # 限制栈深度
+            if len(self.redo_ignore_stack) > self.max_stack_depth:
+                self.redo_ignore_stack.pop(0)
+            
             self.ignored_regions.pop()
             self.update_display()
             return True
 
         return False
+
+    def redo_last_action(self):
+        """重做上一步操作。"""
+        if self.is_summary:
+            return False
+
+        # 忽略区域模式
+        if self.ignoring_region:
+            if self.redo_ignore_stack:
+                last_action = self.redo_ignore_stack.pop()
+                
+                # 处理添加点操作的重做
+                if last_action['action'] == 'add_point':
+                    # 保存当前状态到undo栈
+                    current_state = {
+                        'action': 'add_point',
+                        'points': self.current_ignored_points.copy()
+                    }
+                    self.ignore_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.ignore_stack) > self.max_stack_depth:
+                        self.ignore_stack.pop(0)
+                    
+                    self.current_ignored_points = last_action['points']
+                # 处理保存区域操作的重做
+                elif last_action['action'] == 'save_region':
+                    # 保存当前状态到undo栈
+                    current_state = {
+                        'action': 'save_region',
+                        'regions': self.ignored_regions.copy()
+                    }
+                    self.ignore_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.ignore_stack) > self.max_stack_depth:
+                        self.ignore_stack.pop(0)
+                    
+                    self.ignored_regions = last_action['regions']
+                
+                self.current_snap_point = None
+                self.update_display()
+                return True
+            else:
+                # 弹出提示框提示无可redo的步骤
+                from PyQt5.QtWidgets import QMessageBox
+                main_win = self.get_main_window()
+                parent = main_win if main_win else self
+                QMessageBox.information(parent, "提示", "无可重做的步骤")
+                return False
+        else:
+            # 标注区域和去除区域共用栈
+            if self.redo_main_stack:
+                last_action = self.redo_main_stack.pop()
+                
+                # 处理暂存区域保存操作的重做
+                if last_action['action'] == 'save_polygon':
+                    # 保存当前状态到undo栈
+                    current_state = {
+                        'action': 'save_polygon',
+                        'current_points': self.current_points.copy(),
+                        'current_plant_polygons': [poly.copy() for poly in self.current_plant_polygons],
+                        'current_plant_labels': self.current_plant_labels.copy()
+                    }
+                    self.main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.main_stack) > self.max_stack_depth:
+                        self.main_stack.pop(0)
+                    
+                    self.current_points = last_action['current_points']
+                    self.current_plant_polygons = last_action['current_plant_polygons']
+                    self.current_plant_labels = last_action['current_plant_labels']
+                # 处理去除区域保存操作的重做
+                elif last_action['action'] == 'save_removal_region':
+                    # 保存当前状态到undo栈
+                    current_state = {
+                        'action': 'save_removal_region',
+                        'regions': [poly.copy() for poly in self.removal_regions],
+                        'current_removal_points': self.current_removal_points.copy()
+                    }
+                    self.main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.main_stack) > self.max_stack_depth:
+                        self.main_stack.pop(0)
+                    
+                    self.removal_regions = last_action['regions']
+                    self.current_removal_points = last_action['current_removal_points']
+                # 处理添加标注点操作的重做
+                elif last_action['action'] == 'add_point':
+                    # 保存当前状态到undo栈
+                    current_state = {
+                        'action': 'add_point',
+                        'points': self.current_points.copy()
+                    }
+                    self.main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.main_stack) > self.max_stack_depth:
+                        self.main_stack.pop(0)
+                    
+                    self.current_points = last_action['points']
+                # 处理添加去除区域点操作的重做
+                elif last_action['action'] == 'add_removal_point':
+                    # 保存当前状态到undo栈
+                    current_state = {
+                        'action': 'add_removal_point',
+                        'points': self.current_removal_points.copy()
+                    }
+                    self.main_stack.append(current_state)
+                    # 限制栈深度
+                    if len(self.main_stack) > self.max_stack_depth:
+                        self.main_stack.pop(0)
+                    
+                    self.current_removal_points = last_action['points']
+                
+                self.current_snap_point = None
+                self.update_display()
+                return True
+            else:
+                # 弹出提示框提示无可redo的步骤
+                from PyQt5.QtWidgets import QMessageBox
+                main_win = self.get_main_window()
+                parent = main_win if main_win else self
+                QMessageBox.information(parent, "提示", "无可重做的步骤")
+                return False
 
     def mousePressEvent(self, event):
         """处理鼠标按下事件。"""
@@ -604,6 +908,26 @@ class ImageLabel(QLabel):
 
             if event.button() != Qt.LeftButton or self.is_summary:
                 return
+
+            # 检查图片状态是否为已完成
+            main_win = self.get_main_window()
+            if main_win and hasattr(main_win, 'current_image_state'):
+                if main_win.current_image_state.get('annotation_completed', False):
+                    from PyQt5.QtWidgets import QMessageBox
+                    reply = QMessageBox.question(
+                        main_win,
+                        "图片已完成标注",
+                        "此图片已标记为完成标注。是否取消已完成状态并继续标注？",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    if reply == QMessageBox.No:
+                        return
+                    else:
+                        # 取消已完成状态
+                        main_win.current_image_state['annotation_completed'] = False
+                        main_win.mark_annotation_changed()
+                        main_win.update_status_bar()
 
             # if self.sam_segmenting:
             #     image_pos = self.screen_to_image(event.pos())
@@ -1267,6 +1591,23 @@ class ImageLabel(QLabel):
 
             if not summary_mode and is_selected:
                 self._draw_polygon_vertices(painter, img_to_screen, plant.get("polygons", []), QColor(255, 60, 60))
+            
+            # 在实例的最左端的点用红色文字标出 plantid
+            # 只在摘要模式（右侧画布）下显示
+            if summary_mode:
+                plant_id = plant.get("id", 0)
+                # 找到所有多边形的所有点
+                all_points = []
+                for polygon in polygons:
+                    all_points.extend(polygon)
+                if all_points:
+                    # 找到最左端的点（x坐标最小的点）
+                    leftmost_point = min(all_points, key=lambda p: p[0])
+                    # 转换为屏幕坐标
+                    label_point = img_to_screen(leftmost_point)
+                    # 绘制文字
+                    painter.setPen(QPen(QColor(255, 0, 0), 1))
+                    painter.drawText(label_point, f"plant {plant_id}")
 
     def _draw_candidate_instances(self, painter, img_to_screen):
         """绘制候选层。"""
@@ -1308,17 +1649,14 @@ class ImageLabel(QLabel):
                         # 绘制区域 label
                         if i < len(self.current_plant_labels):
                             label = self.current_plant_labels[i]
-                            # 找到最后一个连线的中点（最后一个点和第一个点之间的连线）
-                            if len(polygon) >= 2:
-                                last_point = polygon[-2]  # 倒数第二个点，因为最后一个点和第一个点相同
-                                first_point = polygon[0]
-                                # 计算中点
-                                mid_x = (last_point[0] + first_point[0]) / 2
-                                mid_y = (last_point[1] + first_point[1]) / 2
-                                mid_point = img_to_screen((mid_x, mid_y))
-                                # 绘制文字
-                                temp_painter.setPen(QPen(QColor(0, 0, 0), 1))
-                                temp_painter.drawText(mid_point, label)
+                            # 找到多边形最靠左边的点
+                            # 找到 x 坐标最小的点
+                            leftmost_point = min(polygon, key=lambda p: p[0])
+                            # 转换为屏幕坐标
+                            label_point = img_to_screen(leftmost_point)
+                            # 绘制文字
+                            temp_painter.setPen(QPen(QColor(0, 0, 0), 1))
+                            temp_painter.drawText(label_point, label)
             
             # 绘制去除区域（挖空效果）
             if self.removal_regions:
