@@ -34,3 +34,4 @@ maskrcnn_val_img/
 img/
 coco_coco/
 beifen.py
+images_raw/

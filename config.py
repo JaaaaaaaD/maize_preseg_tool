@@ -62,12 +62,12 @@ SHORTCUTS = {
     "UNDO": "Ctrl+Z",
     "REDO": "Ctrl+Y",
     "DELETE_PLANT": "Delete",
+    "DELETE_STAGING_POLYGON": "Ctrl+D",
     "TOGGLE_EDGE_SNAP": "Shift",
     "LOAD_BATCH": "Ctrl+Shift+O",
     "PREV_IMAGE": "Left",
     "NEXT_IMAGE": "Right",
     "TOGGLE_SAM_SEGMENTATION": "S",
-    "TOGGLE_REGION_GROWING": "G",
     "TOGGLE_IGNORE_REGION": "I"
 }
 

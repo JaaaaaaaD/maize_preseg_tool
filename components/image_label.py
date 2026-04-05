@@ -6,7 +6,7 @@ import copy
 
 import cv2
 import numpy as np
-from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtCore import QPoint, QRectF, Qt
 from PyQt5.QtGui import QBrush, QColor, QCursor, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QLabel, QProgressDialog, QSizePolicy
 
@@ -111,11 +111,131 @@ class ImageLabel(QLabel):
         self.fine_tune_instance_id = None  # 微调模式下选中的实例ID
         self.fine_tune_original_data = {}  # 微调前的原始数据
         self.add_vertex_mode = False  # 是否处于添加顶点模式
+        self.delete_vertex_mode = False  # 是否处于删除顶点模式
+        self.split_staging_mode = False
+        self.split_line_dragging = False
+        self.split_line_start = None
+        self.split_line_end = None
+        self.preannotation_box_mode = False
+        self.preannotation_box_dragging = False
+        self.preannotation_box_start = None
+        self.preannotation_box_end = None
+        self.preannotation_box_rect = None
 
     def set_mode(self, mode):
         """设置操作模式"""
         self.mode = mode
+
+    def set_preannotation_box_mode(self, enabled):
+        """切换预标注框选模式。"""
+        self.preannotation_box_mode = bool(enabled)
+        if not enabled:
+            self.preannotation_box_dragging = False
+            self.preannotation_box_start = None
+            self.preannotation_box_end = None
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def clear_preannotation_box(self):
+        """清除当前框选预览。"""
+        self.preannotation_box_dragging = False
+        self.preannotation_box_start = None
+        self.preannotation_box_end = None
+        self.preannotation_box_rect = None
+        self.update_display()
     
+    def set_split_staging_mode(self, enabled):
+        self.split_staging_mode = bool(enabled)
+        if not enabled:
+            self.split_line_dragging = False
+            self.split_line_start = None
+            self.split_line_end = None
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    @staticmethod
+    def _label_for_index(labels, index, default="stem"):
+        if index < len(labels) and labels[index]:
+            return labels[index]
+        return default
+
+    @staticmethod
+    def _make_staging_entity_id(owner_kind, owner_id, polygon_index):
+        if owner_kind == "preview":
+            return f"preview:{int(polygon_index)}"
+        return f"formal:{int(owner_id)}:{int(polygon_index)}"
+
+    @staticmethod
+    def _parse_staging_entity_id(entity_id):
+        parts = str(entity_id or "").split(":")
+        if len(parts) == 2 and parts[0] == "preview":
+            try:
+                return {"owner_kind": "preview", "owner_id": None, "polygon_index": int(parts[1])}
+            except (TypeError, ValueError):
+                return None
+        if len(parts) == 3 and parts[0] == "formal":
+            try:
+                return {"owner_kind": "formal", "owner_id": int(parts[1]), "polygon_index": int(parts[2])}
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _ensure_label_slots(self, labels, polygon_count):
+        normalized = list(labels or [])
+        while len(normalized) < polygon_count:
+            normalized.append("stem")
+        return normalized
+
+    def _find_plant_by_id(self, plant_id):
+        for plant in self.plants:
+            if int(plant.get("id", 0)) == int(plant_id):
+                return plant
+        return None
+
+    def _resolve_staging_entity(self, entity_id=None):
+        parsed = self._parse_staging_entity_id(entity_id or self.selected_entity_id)
+        if not parsed:
+            return None
+
+        polygon_index = parsed["polygon_index"]
+        if parsed["owner_kind"] == "preview":
+            if polygon_index < 0 or polygon_index >= len(self.current_plant_polygons):
+                return None
+            labels = self._ensure_label_slots(self.current_plant_labels, len(self.current_plant_polygons))
+            self.current_plant_labels = labels
+            return {
+                "id": self._make_staging_entity_id("preview", None, polygon_index),
+                "owner_kind": "preview",
+                "owner_id": None,
+                "polygon_index": polygon_index,
+                "polygon": self.current_plant_polygons[polygon_index],
+                "polygons": [self.current_plant_polygons[polygon_index]],
+                "label": self._label_for_index(labels, polygon_index),
+            }
+
+        plant = self._find_plant_by_id(parsed["owner_id"])
+        if not plant:
+            return None
+        polygons = plant.get("polygons", [])
+        if polygon_index < 0 or polygon_index >= len(polygons):
+            return None
+        labels = self._ensure_label_slots(plant.get("labels", []), len(polygons))
+        plant["labels"] = labels
+        return {
+            "id": self._make_staging_entity_id("formal", plant.get("id"), polygon_index),
+            "owner_kind": "formal",
+            "owner_id": plant.get("id"),
+            "polygon_index": polygon_index,
+            "polygon": polygons[polygon_index],
+            "polygons": [polygons[polygon_index]],
+            "label": self._label_for_index(labels, polygon_index),
+            "plant": plant,
+        }
+
     def enter_fine_tune_mode(self, instance_id):
         """进入微调模式"""
         # 保存微调前的原始数据
@@ -135,24 +255,59 @@ class ImageLabel(QLabel):
         self.fine_tune_instance_id = instance_id
         self.vertex_drag_info = None  # 拖拽中的顶点信息
         self.add_vertex_mode = False  # 确保退出添加顶点模式
+        self.delete_vertex_mode = False  # 确保退出删除顶点模式
         self.update_display()
+
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        if main_win and hasattr(main_win, "on_fine_tune_session_started"):
+            main_win.on_fine_tune_session_started(instance_id)
     
     def enter_add_vertex_mode(self):
         """进入添加顶点模式"""
         if self.mode != "fine_tune":
             return
         self.add_vertex_mode = True
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
         self.update_display()
         
     def exit_add_vertex_mode(self):
         """退出添加顶点模式"""
         self.add_vertex_mode = False
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def enter_delete_vertex_mode(self):
+        """进入删除顶点模式"""
+        if self.mode != "fine_tune":
+            return
+        self.delete_vertex_mode = True
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def exit_delete_vertex_mode(self):
+        """退出删除顶点模式"""
+        self.delete_vertex_mode = False
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
         self.update_display()
 
     def exit_fine_tune_mode(self, save_changes=False):
         """退出微调模式"""
+        if self.mode != "fine_tune":
+            return True
+
         # 检查是否有修改
         has_changes = len(self.fine_tune_stack) > 0
+        saved = bool(save_changes)
         
         if has_changes and not save_changes:
             # 弹出对话框询问是否保存
@@ -168,7 +323,7 @@ class ImageLabel(QLabel):
             )
             
             if reply == QMessageBox.Cancel:
-                return  # 取消退出
+                return False  # 取消退出
             elif reply == QMessageBox.No:
                 # 恢复原始数据
                 if self.fine_tune_instance_id in self.fine_tune_original_data:
@@ -178,21 +333,34 @@ class ImageLabel(QLabel):
                         if int(plant.get("id", 0)) == int(self.fine_tune_instance_id):
                             self.plants[i] = original_data
                             break
-        
+                saved = False
+            else:
+                saved = True
+
         # 退出微调模式
+        exited_instance_id = self.fine_tune_instance_id
         self.mode = "normal"
         self.fine_tune_instance_id = None
         self.dragging_vertex = None
         self.fine_tune_original_data = {}
         self.add_vertex_mode = False  # 同时退出添加顶点模式
+        self.delete_vertex_mode = False  # 同时退出删除顶点模式
+        self.selected_entity_kind = None
+        self.selected_entity_id = None
         self.update_display()
         
         # 通知主窗口更新
         main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
         if main_win:
             main_win.mark_annotation_changed()
             main_win.sync_summary_view()
             main_win.update_plant_list()
+            if hasattr(main_win, "on_fine_tune_session_finished"):
+                main_win.on_fine_tune_session_finished(exited_instance_id, saved)
+        self._notify_selection_changed()
+        return True
 
     
 
@@ -213,6 +381,8 @@ class ImageLabel(QLabel):
             self.current_snap_point = None
             self.is_dragging = False
             self.drag_last_pos = QPoint()
+            self.set_split_staging_mode(False)
+            self.clear_preannotation_box()
 
             self.view_center_x = pil_image.width / 2.0
             self.view_center_y = pil_image.height / 2.0
@@ -246,6 +416,7 @@ class ImageLabel(QLabel):
         self.current_plant_polygons = []
         self.current_plant_labels = []
         self.candidate_instances = []
+        self.set_split_staging_mode(False)
         self.update_display()
 
 
@@ -284,13 +455,250 @@ class ImageLabel(QLabel):
                 if candidate.get("candidate_id") == self.selected_entity_id:
                     return "candidate", candidate
         elif self.selected_entity_kind == "staging":
-            for plant in self.plants:
-                for area in plant.get("staging_areas", []):
-                    if int(area.get("id", 0)) == int(self.selected_entity_id):
-                        return "staging", area
+            staging = self._resolve_staging_entity(self.selected_entity_id)
+            if staging:
+                return "staging", staging
 
         return None, None
 
+
+    def _record_preview_state_change(self, old_polygons, old_labels, action_name, details=None):
+        self.main_stack.append(
+            {
+                "action": "replace_preview_state",
+                "action_name": action_name,
+                "old_polygons": copy.deepcopy(old_polygons),
+                "old_labels": copy.deepcopy(old_labels),
+                "new_polygons": copy.deepcopy(self.current_plant_polygons),
+                "new_labels": copy.deepcopy(self.current_plant_labels),
+                "details": copy.deepcopy(details or {}),
+            }
+        )
+        if len(self.main_stack) > self.max_stack_depth:
+            self.main_stack.pop(0)
+        self.redo_main_stack = []
+
+    def _record_fine_tune_state_change(self, plant, old_polygons, old_labels, action_name, details=None):
+        self.fine_tune_stack.append(
+            {
+                "action": "replace_entity_state",
+                "action_name": action_name,
+                "entity_id": plant.get("id"),
+                "old_polygons": copy.deepcopy(old_polygons),
+                "old_labels": copy.deepcopy(old_labels),
+                "new_polygons": copy.deepcopy(plant.get("polygons", [])),
+                "new_labels": copy.deepcopy(plant.get("labels", [])),
+                "details": copy.deepcopy(details or {}),
+            }
+        )
+        if len(self.fine_tune_stack) > self.max_stack_depth:
+            self.fine_tune_stack.pop(0)
+        self.fine_tune_redo_stack = []
+
+    def _notify_preannotation_adjustment(self, instance_id, action_type, details):
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "record_preannotation_adjustment_action"):
+            main_win.record_preannotation_adjustment_action(instance_id, action_type, copy.deepcopy(details))
+
+    def update_selected_staging_label(self, new_label):
+        selected_kind, staging = self.get_selected_entity()
+        if selected_kind != "staging" or not staging:
+            return False, "请先选择一个暂存区域"
+
+        polygon_index = staging["polygon_index"]
+        if staging["owner_kind"] == "preview":
+            old_polygons = copy.deepcopy(self.current_plant_polygons)
+            old_labels = copy.deepcopy(self.current_plant_labels)
+            self.current_plant_labels = self._ensure_label_slots(self.current_plant_labels, len(self.current_plant_polygons))
+            self.current_plant_labels[polygon_index] = new_label
+            self._record_preview_state_change(
+                old_polygons,
+                old_labels,
+                "update_label",
+                {"polygon_index": polygon_index, "label": new_label},
+            )
+        else:
+            plant = staging["plant"]
+            old_polygons = copy.deepcopy(plant.get("polygons", []))
+            old_labels = copy.deepcopy(plant.get("labels", []))
+            labels = self._ensure_label_slots(plant.get("labels", []), len(plant.get("polygons", [])))
+            labels[polygon_index] = new_label
+            plant["labels"] = labels
+            touch_instance(plant, "ai_modified" if plant.get("source") in ("ai_accepted", "ai_assisted") else None)
+            self._record_fine_tune_state_change(
+                plant,
+                old_polygons,
+                old_labels,
+                "update_label",
+                {"polygon_index": polygon_index, "label": new_label},
+            )
+            self._notify_preannotation_adjustment(
+                plant.get("id"),
+                "update_staging_label",
+                {"polygon_index": polygon_index, "label": new_label},
+            )
+
+        self._notify_annotation_changed()
+        self.update_display()
+        return True, "暂存区域标签已更新"
+
+    def delete_selected_staging_polygon(self):
+        selected_kind, staging = self.get_selected_entity()
+        if selected_kind != "staging" or not staging:
+            return False, "请先选择一个暂存区域"
+
+        polygon_index = staging["polygon_index"]
+        if staging["owner_kind"] == "preview":
+            if len(self.current_plant_polygons) <= 1:
+                return False, "至少保留一个暂存区域后再删除"
+            old_polygons = copy.deepcopy(self.current_plant_polygons)
+            old_labels = copy.deepcopy(self.current_plant_labels)
+            del self.current_plant_polygons[polygon_index]
+            labels = self._ensure_label_slots(self.current_plant_labels, len(old_polygons))
+            del labels[polygon_index]
+            self.current_plant_labels = labels
+            self.selected_entity_kind = None
+            self.selected_entity_id = None
+            self._record_preview_state_change(
+                old_polygons,
+                old_labels,
+                "delete_polygon",
+                {"polygon_index": polygon_index},
+            )
+        else:
+            plant = staging["plant"]
+            polygons = plant.get("polygons", [])
+            if len(polygons) <= 1:
+                return False, "至少保留一个暂存区域后再删除"
+            old_polygons = copy.deepcopy(polygons)
+            old_labels = copy.deepcopy(plant.get("labels", []))
+            del polygons[polygon_index]
+            labels = self._ensure_label_slots(plant.get("labels", []), len(old_polygons))
+            del labels[polygon_index]
+            plant["polygons"] = normalize_polygons(polygons)
+            plant["labels"] = labels
+            touch_instance(plant, "ai_modified" if plant.get("source") in ("ai_accepted", "ai_assisted") else None)
+            self.selected_entity_kind = "formal"
+            self.selected_entity_id = str(plant.get("id"))
+            self._record_fine_tune_state_change(
+                plant,
+                old_polygons,
+                old_labels,
+                "delete_polygon",
+                {"polygon_index": polygon_index},
+            )
+            self._notify_preannotation_adjustment(
+                plant.get("id"),
+                "delete_staging_polygon",
+                {"polygon_index": polygon_index},
+            )
+
+        self.set_split_staging_mode(False)
+        self._notify_annotation_changed()
+        self.update_display()
+        return True, "暂存区域已删除"
+
+    def split_selected_staging_polygon(self, line_start, line_end, gap=5):
+        selected_kind, staging = self.get_selected_entity()
+        if selected_kind != "staging" or not staging:
+            return False, "请先选择一个暂存区域"
+
+        polygon = staging.get("polygon", [])
+        if len(polygon) < 3:
+            return False, "当前暂存区域无法切割"
+
+        if math.dist((float(line_start[0]), float(line_start[1])), (float(line_end[0]), float(line_end[1]))) < 3:
+            return False, "切割线太短"
+
+        x_coords = [point[0] for point in polygon]
+        y_coords = [point[1] for point in polygon]
+        padding = max(8, int(gap) + 6)
+        min_x = math.floor(min(x_coords)) - padding
+        min_y = math.floor(min(y_coords)) - padding
+        max_x = math.ceil(max(x_coords)) + padding
+        max_y = math.ceil(max(y_coords)) + padding
+
+        width = max(2, int(max_x - min_x + 1))
+        height = max(2, int(max_y - min_y + 1))
+        mask = np.zeros((height, width), dtype=np.uint8)
+
+        local_polygon = np.array(
+            [[int(round(point[0] - min_x)), int(round(point[1] - min_y))] for point in polygon],
+            dtype=np.int32,
+        )
+        cv2.fillPoly(mask, [local_polygon], 255)
+
+        local_start = (int(round(line_start[0] - min_x)), int(round(line_start[1] - min_y)))
+        local_end = (int(round(line_end[0] - min_x)), int(round(line_end[1] - min_y)))
+        cv2.line(mask, local_start, local_end, 0, thickness=max(5, int(gap)))
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        split_polygons = []
+        for contour in contours:
+            if cv2.contourArea(contour) < 20:
+                continue
+            epsilon = max(1.0, 0.003 * cv2.arcLength(contour, True))
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            points = [(float(point[0][0] + min_x), float(point[0][1] + min_y)) for point in approx]
+            normalized = normalize_polygons([points])
+            if normalized:
+                split_polygons.append(normalized[0])
+
+        split_polygons.sort(key=lambda item: abs(calculate_polygon_area(item)), reverse=True)
+        if len(split_polygons) < 2:
+            return False, "切割后没有得到两个有效区域"
+        if len(split_polygons) > 2:
+            split_polygons = split_polygons[:2]
+
+        polygon_index = staging["polygon_index"]
+        label = staging.get("label", "stem")
+        if staging["owner_kind"] == "preview":
+            old_polygons = copy.deepcopy(self.current_plant_polygons)
+            old_labels = copy.deepcopy(self.current_plant_labels)
+            self.current_plant_polygons = (
+                self.current_plant_polygons[:polygon_index]
+                + split_polygons
+                + self.current_plant_polygons[polygon_index + 1:]
+            )
+            labels = self._ensure_label_slots(self.current_plant_labels, len(old_polygons))
+            self.current_plant_labels = labels[:polygon_index] + [label, label] + labels[polygon_index + 1:]
+            self._record_preview_state_change(
+                old_polygons,
+                old_labels,
+                "split_polygon",
+                {"polygon_index": polygon_index, "gap": gap},
+            )
+            self.select_entity("staging", self._make_staging_entity_id("preview", None, polygon_index))
+        else:
+            plant = staging["plant"]
+            old_polygons = copy.deepcopy(plant.get("polygons", []))
+            old_labels = copy.deepcopy(plant.get("labels", []))
+            plant["polygons"] = (
+                plant.get("polygons", [])[:polygon_index]
+                + split_polygons
+                + plant.get("polygons", [])[polygon_index + 1:]
+            )
+            labels = self._ensure_label_slots(plant.get("labels", []), len(old_polygons))
+            plant["labels"] = labels[:polygon_index] + [label, label] + labels[polygon_index + 1:]
+            touch_instance(plant, "ai_modified" if plant.get("source") in ("ai_accepted", "ai_assisted") else None)
+            self._record_fine_tune_state_change(
+                plant,
+                old_polygons,
+                old_labels,
+                "split_polygon",
+                {"polygon_index": polygon_index, "gap": gap},
+            )
+            self._notify_preannotation_adjustment(
+                plant.get("id"),
+                "split_staging_polygon",
+                {"polygon_index": polygon_index, "gap": gap},
+            )
+            self.select_entity("staging", self._make_staging_entity_id("formal", plant.get("id"), polygon_index))
+
+        self.set_split_staging_mode(False)
+        self._notify_annotation_changed()
+        self.update_display()
+        return True, "暂存区域已切割为两个区域"
 
     def delete_plant(self, plant_id):
         """兼容旧接口：删除正式实例。"""
@@ -456,6 +864,9 @@ class ImageLabel(QLabel):
         if area <= 5:
             return False
 
+        if self.mode == "fine_tune" and self.fine_tune_instance_id:
+            return self._apply_fine_tune_removal_region(unique_points)
+
         # 记录操作到栈中
         self.main_stack.append({
             'action': 'save_removal_region',
@@ -466,6 +877,82 @@ class ImageLabel(QLabel):
         self.removal_regions.append(unique_points)
         self.current_removal_points = []
         self.update_display()
+        return True
+
+    def _apply_fine_tune_removal_region(self, removal_polygon):
+        """将去除区域作为内孔应用到微调中的实例。"""
+        entity = None
+        for plant in self.plants:
+            if int(plant.get("id", 0)) == int(self.fine_tune_instance_id):
+                entity = plant
+                break
+        if not entity:
+            return False
+
+        old_polygons = copy.deepcopy(entity.get("polygons", []))
+        final_polygons = copy.deepcopy(entity.get("polygons", []))
+        if not final_polygons:
+            return False
+
+        x_coords = [p[0] for p in removal_polygon]
+        y_coords = [p[1] for p in removal_polygon]
+        center_point = (sum(x_coords) / len(x_coords), sum(y_coords) / len(y_coords))
+
+        added_hole = False
+        for outer_contour in old_polygons:
+            if len(outer_contour) < 3 or self._get_polygon_area(outer_contour) > 0:
+                continue
+            if not self._point_in_polygon(center_point, outer_contour):
+                continue
+            intersection_poly = self._polygon_intersection(outer_contour, removal_polygon)
+            if not intersection_poly or len(intersection_poly) < 3:
+                continue
+            if self._get_polygon_area(intersection_poly) < 0:
+                intersection_poly = intersection_poly[::-1]
+            final_polygons.append(intersection_poly)
+            added_hole = True
+            break
+
+        if not added_hole:
+            return False
+
+        entity["polygons"] = normalize_polygons(final_polygons)
+        if entity.get("source") in ("ai_accepted", "ai_assisted"):
+            entity["source"] = "ai_modified"
+        touch_instance(entity)
+
+        self.fine_tune_stack.append({
+            'action': 'add_hole',
+            'entity_id': entity.get("id"),
+            'old_polygons': old_polygons,
+            'new_polygons': copy.deepcopy(entity.get("polygons", [])),
+            'removal_polygon': copy.deepcopy(removal_polygon),
+        })
+        if len(self.fine_tune_stack) > self.max_stack_depth:
+            self.fine_tune_stack.pop(0)
+        self.fine_tune_redo_stack = []
+
+        self.current_removal_points = []
+        if self.selected_entity_kind == "staging":
+            self.selected_entity_kind = None
+            self.selected_entity_id = None
+        self.set_split_staging_mode(False)
+        self.current_snap_point = None
+        self.update_display()
+        self._notify_annotation_changed()
+
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "record_preannotation_adjustment_action"):
+            main_win.record_preannotation_adjustment_action(
+                entity.get("id"),
+                "add_hole",
+                {
+                    "removal_polygon": copy.deepcopy(removal_polygon),
+                    "result_polygons": copy.deepcopy(entity.get("polygons", [])),
+                },
+            )
+        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+            main_win.on_entity_geometry_modified()
         return True
 
     def confirm_preview_and_save(self):
@@ -572,6 +1059,10 @@ class ImageLabel(QLabel):
         self.current_removal_points = []
 
         # 保存整个植株时清空撤销栈
+        if self.selected_entity_kind == "staging":
+            self.selected_entity_kind = None
+            self.selected_entity_id = None
+        self.set_split_staging_mode(False)
         self.main_stack = []
         
         # 通知主窗口更新
@@ -589,6 +1080,35 @@ class ImageLabel(QLabel):
         if self.mode == "fine_tune":
             if self.fine_tune_stack:
                 last_action = self.fine_tune_stack.pop()
+                if last_action.get('action') == 'replace_entity_state':
+                    entity = self._find_plant_by_id(last_action['entity_id'])
+                    if entity:
+                        current_state = {
+                            'action': 'replace_entity_state',
+                            'action_name': last_action.get('action_name'),
+                            'entity_id': entity.get('id'),
+                            'old_polygons': copy.deepcopy(entity.get('polygons', [])),
+                            'old_labels': copy.deepcopy(entity.get('labels', [])),
+                            'new_polygons': copy.deepcopy(last_action.get('new_polygons', [])),
+                            'new_labels': copy.deepcopy(last_action.get('new_labels', [])),
+                            'details': copy.deepcopy(last_action.get('details', {})),
+                        }
+                        self.fine_tune_redo_stack.append(current_state)
+                        if len(self.fine_tune_redo_stack) > self.max_stack_depth:
+                            self.fine_tune_redo_stack.pop(0)
+
+                        entity["polygons"] = normalize_polygons(copy.deepcopy(last_action.get('old_polygons', [])))
+                        entity["labels"] = self._ensure_label_slots(
+                            copy.deepcopy(last_action.get('old_labels', [])),
+                            len(entity["polygons"]),
+                        )
+                        touch_instance(entity)
+                        self.current_snap_point = None
+                        self.update_display()
+                        main_win = self.get_main_window()
+                        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                            main_win.on_entity_geometry_modified()
+                        return True
                 
                 # 处理添加顶点操作的撤销
                 if last_action['action'] == 'add_vertex':
@@ -666,6 +1186,94 @@ class ImageLabel(QLabel):
                                 touch_instance(entity)
                                 self.update_display()
                                 return True
+                elif last_action['action'] == 'delete_vertex':
+                    entity_id = last_action['entity_id']
+                    polygon_index = last_action['polygon_index']
+                    entity = None
+                    for plant in self.plants:
+                        if plant.get("id") == entity_id:
+                            entity = plant
+                            break
+                    if entity:
+                        polygons = entity.get("polygons", [])
+                        current_polygon = polygons[polygon_index].copy() if polygon_index < len(polygons) else []
+                        current_state = {
+                            'action': 'delete_vertex',
+                            'entity_id': entity_id,
+                            'polygon_index': polygon_index,
+                            'point_index': last_action['point_index'],
+                            'old_polygon': current_polygon,
+                            'new_polygon': copy.deepcopy(last_action['old_polygon']),
+                        }
+                        self.fine_tune_redo_stack.append(current_state)
+                        if len(self.fine_tune_redo_stack) > self.max_stack_depth:
+                            self.fine_tune_redo_stack.pop(0)
+
+                        if polygon_index < len(polygons):
+                            polygons[polygon_index] = copy.deepcopy(last_action['old_polygon'])
+                            entity["polygons"] = normalize_polygons(entity["polygons"])
+                            touch_instance(entity)
+                            self.update_display()
+                            main_win = self.get_main_window()
+                            if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                                main_win.on_entity_geometry_modified()
+                            return True
+                elif last_action['action'] == 'add_hole':
+                    entity_id = last_action['entity_id']
+                    entity = None
+                    for plant in self.plants:
+                        if plant.get("id") == entity_id:
+                            entity = plant
+                            break
+                    if entity:
+                        current_state = {
+                            'action': 'add_hole',
+                            'entity_id': entity_id,
+                            'old_polygons': copy.deepcopy(entity.get("polygons", [])),
+                            'new_polygons': copy.deepcopy(last_action['new_polygons']),
+                            'removal_polygon': copy.deepcopy(last_action.get('removal_polygon', [])),
+                        }
+                        self.fine_tune_redo_stack.append(current_state)
+                        if len(self.fine_tune_redo_stack) > self.max_stack_depth:
+                            self.fine_tune_redo_stack.pop(0)
+
+                        entity["polygons"] = normalize_polygons(copy.deepcopy(last_action['old_polygons']))
+                        touch_instance(entity)
+                        self.current_snap_point = None
+                        self.update_display()
+                        main_win = self.get_main_window()
+                        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                            main_win.on_entity_geometry_modified()
+                        return True
+                elif last_action['action'] == 'replace_entity_state':
+                    entity = self._find_plant_by_id(last_action['entity_id'])
+                    if entity:
+                        current_state = {
+                            'action': 'replace_entity_state',
+                            'action_name': last_action.get('action_name'),
+                            'entity_id': entity.get('id'),
+                            'old_polygons': copy.deepcopy(entity.get('polygons', [])),
+                            'old_labels': copy.deepcopy(entity.get('labels', [])),
+                            'new_polygons': copy.deepcopy(last_action.get('new_polygons', [])),
+                            'new_labels': copy.deepcopy(last_action.get('new_labels', [])),
+                            'details': copy.deepcopy(last_action.get('details', {})),
+                        }
+                        self.fine_tune_redo_stack.append(current_state)
+                        if len(self.fine_tune_redo_stack) > self.max_stack_depth:
+                            self.fine_tune_redo_stack.pop(0)
+
+                        entity["polygons"] = normalize_polygons(copy.deepcopy(last_action.get('old_polygons', [])))
+                        entity["labels"] = self._ensure_label_slots(
+                            copy.deepcopy(last_action.get('old_labels', [])),
+                            len(entity["polygons"]),
+                        )
+                        touch_instance(entity)
+                        self.current_snap_point = None
+                        self.update_display()
+                        main_win = self.get_main_window()
+                        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                            main_win.on_entity_geometry_modified()
+                        return True
             
             # 弹出提示框提示无可undo的步骤
             from PyQt5.QtWidgets import QMessageBox
@@ -728,6 +1336,28 @@ class ImageLabel(QLabel):
             # 标注区域和去除区域共用栈
             if self.main_stack:
                 last_action = self.main_stack.pop()
+                if last_action.get('action') == 'replace_preview_state':
+                    current_state = {
+                        'action': 'replace_preview_state',
+                        'action_name': last_action.get('action_name'),
+                        'old_polygons': copy.deepcopy(self.current_plant_polygons),
+                        'old_labels': copy.deepcopy(self.current_plant_labels),
+                        'new_polygons': copy.deepcopy(last_action.get('new_polygons', [])),
+                        'new_labels': copy.deepcopy(last_action.get('new_labels', [])),
+                        'details': copy.deepcopy(last_action.get('details', {})),
+                    }
+                    self.redo_main_stack.append(current_state)
+                    if len(self.redo_main_stack) > self.max_stack_depth:
+                        self.redo_main_stack.pop(0)
+
+                    self.current_plant_polygons = copy.deepcopy(last_action.get('old_polygons', []))
+                    self.current_plant_labels = self._ensure_label_slots(
+                        copy.deepcopy(last_action.get('old_labels', [])),
+                        len(self.current_plant_polygons),
+                    )
+                    self.current_snap_point = None
+                    self.update_display()
+                    return True
                 
                 # 处理暂存区域保存操作的撤销
                 if last_action['action'] == 'save_polygon':
@@ -897,6 +1527,36 @@ class ImageLabel(QLabel):
         if self.mode == "fine_tune":
             if self.fine_tune_redo_stack:
                 last_action = self.fine_tune_redo_stack.pop()
+                if last_action.get('action') == 'replace_entity_state':
+                    entity = self._find_plant_by_id(last_action['entity_id'])
+                    if entity:
+                        current_state = {
+                            'action': 'replace_entity_state',
+                            'action_name': last_action.get('action_name'),
+                            'entity_id': entity.get('id'),
+                            'old_polygons': copy.deepcopy(entity.get('polygons', [])),
+                            'old_labels': copy.deepcopy(entity.get('labels', [])),
+                            'new_polygons': copy.deepcopy(last_action.get('new_polygons', [])),
+                            'new_labels': copy.deepcopy(last_action.get('new_labels', [])),
+                            'details': copy.deepcopy(last_action.get('details', {})),
+                        }
+                        self.fine_tune_stack.append(current_state)
+                        if len(self.fine_tune_stack) > self.max_stack_depth:
+                            self.fine_tune_stack.pop(0)
+
+                        entity["polygons"] = normalize_polygons(copy.deepcopy(last_action.get('new_polygons', [])))
+                        entity["labels"] = self._ensure_label_slots(
+                            copy.deepcopy(last_action.get('new_labels', [])),
+                            len(entity["polygons"]),
+                        )
+                        touch_instance(entity)
+                        self.current_snap_point = None
+                        self.update_display()
+                        self._notify_annotation_changed()
+                        main_win = self.get_main_window()
+                        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                            main_win.on_entity_geometry_modified()
+                        return True
                 
                 # 处理添加顶点操作的重做
                 if last_action['action'] == 'add_vertex':
@@ -974,6 +1634,66 @@ class ImageLabel(QLabel):
                                 touch_instance(entity)
                                 self.update_display()
                                 return True
+                elif last_action['action'] == 'delete_vertex':
+                    entity_id = last_action['entity_id']
+                    polygon_index = last_action['polygon_index']
+                    entity = None
+                    for plant in self.plants:
+                        if plant.get("id") == entity_id:
+                            entity = plant
+                            break
+                    if entity:
+                        polygons = entity.get("polygons", [])
+                        current_polygon = polygons[polygon_index].copy() if polygon_index < len(polygons) else []
+                        current_state = {
+                            'action': 'delete_vertex',
+                            'entity_id': entity_id,
+                            'polygon_index': polygon_index,
+                            'point_index': last_action['point_index'],
+                            'old_polygon': current_polygon,
+                            'new_polygon': copy.deepcopy(last_action['new_polygon']),
+                        }
+                        self.fine_tune_stack.append(current_state)
+                        if len(self.fine_tune_stack) > self.max_stack_depth:
+                            self.fine_tune_stack.pop(0)
+
+                        if polygon_index < len(polygons):
+                            polygons[polygon_index] = copy.deepcopy(last_action['new_polygon'])
+                            entity["polygons"] = normalize_polygons(entity["polygons"])
+                            touch_instance(entity)
+                            self.update_display()
+                            main_win = self.get_main_window()
+                            if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                                main_win.on_entity_geometry_modified()
+                            return True
+                elif last_action['action'] == 'add_hole':
+                    entity_id = last_action['entity_id']
+                    entity = None
+                    for plant in self.plants:
+                        if plant.get("id") == entity_id:
+                            entity = plant
+                            break
+                    if entity:
+                        current_state = {
+                            'action': 'add_hole',
+                            'entity_id': entity_id,
+                            'old_polygons': copy.deepcopy(entity.get("polygons", [])),
+                            'new_polygons': copy.deepcopy(last_action['new_polygons']),
+                            'removal_polygon': copy.deepcopy(last_action.get('removal_polygon', [])),
+                        }
+                        self.fine_tune_stack.append(current_state)
+                        if len(self.fine_tune_stack) > self.max_stack_depth:
+                            self.fine_tune_stack.pop(0)
+
+                        entity["polygons"] = normalize_polygons(copy.deepcopy(last_action['new_polygons']))
+                        touch_instance(entity)
+                        self.current_snap_point = None
+                        self.update_display()
+                        self._notify_annotation_changed()
+                        main_win = self.get_main_window()
+                        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+                            main_win.on_entity_geometry_modified()
+                        return True
             
             # 弹出提示框提示无可redo的步骤
             from PyQt5.QtWidgets import QMessageBox
@@ -1028,6 +1748,28 @@ class ImageLabel(QLabel):
             # 标注区域和去除区域共用栈
             if self.redo_main_stack:
                 last_action = self.redo_main_stack.pop()
+                if last_action.get('action') == 'replace_preview_state':
+                    current_state = {
+                        'action': 'replace_preview_state',
+                        'action_name': last_action.get('action_name'),
+                        'old_polygons': copy.deepcopy(self.current_plant_polygons),
+                        'old_labels': copy.deepcopy(self.current_plant_labels),
+                        'new_polygons': copy.deepcopy(last_action.get('new_polygons', [])),
+                        'new_labels': copy.deepcopy(last_action.get('new_labels', [])),
+                        'details': copy.deepcopy(last_action.get('details', {})),
+                    }
+                    self.main_stack.append(current_state)
+                    if len(self.main_stack) > self.max_stack_depth:
+                        self.main_stack.pop(0)
+
+                    self.current_plant_polygons = copy.deepcopy(last_action.get('new_polygons', []))
+                    self.current_plant_labels = self._ensure_label_slots(
+                        copy.deepcopy(last_action.get('new_labels', [])),
+                        len(self.current_plant_polygons),
+                    )
+                    self.current_snap_point = None
+                    self.update_display()
+                    return True
                 
                 # 处理暂存区域保存操作的重做
                 if last_action['action'] == 'save_polygon':
@@ -1145,6 +1887,26 @@ class ImageLabel(QLabel):
             if event.button() != Qt.LeftButton or self.is_summary:
                 return
 
+            image_pos = self.screen_to_image(event.pos())
+
+            if self.preannotation_box_mode:
+                if image_pos:
+                    self.preannotation_box_dragging = True
+                    self.preannotation_box_start = image_pos
+                    self.preannotation_box_end = image_pos
+                    self.preannotation_box_rect = None
+                    self.update_display()
+                return
+
+            if self.split_staging_mode:
+                selected_kind, _ = self.get_selected_entity()
+                if selected_kind == "staging" and image_pos:
+                    self.split_line_dragging = True
+                    self.split_line_start = image_pos
+                    self.split_line_end = image_pos
+                    self.update_display()
+                return
+
             # 检查图片状态是否为已完成
             main_win = self.get_main_window()
             if main_win and hasattr(main_win, 'current_image_state'):
@@ -1179,16 +1941,31 @@ class ImageLabel(QLabel):
                 self.update_display()
                 return
 
-            image_pos = self.screen_to_image(event.pos())
             if not image_pos:
+                return
+
+            # ??????????????????????????????????
+            if self.candidate_instances and not (self.mode == "fine_tune" and self.fine_tune_instance_id):
+                hit_kind, hit_id = self._find_hit_entity(image_pos)
+                if hit_kind == "candidate":
+                    self.select_entity(hit_kind, hit_id)
                 return
 
             # 优先处理微调模式
             if self.mode == "fine_tune" and self.fine_tune_instance_id:
-                # 微调模式
+                if self.removing_region:
+                    self.main_stack.append({
+                        'action': 'add_removal_point',
+                        'points': self.current_removal_points.copy()
+                    })
+                    if self.current_removal_points:
+                        self.current_removal_points.append(image_pos)
+                    else:
+                        self.current_removal_points = [image_pos]
+                    self._notify_annotation_changed()
+                    return
                 if self.add_vertex_mode:
-                    # 添加顶点模式：找到最近的连线并添加顶点
-                    # 查找指定实例
+                    # 添加顶点模式：在当前微调实例最近的边上加点
                     entity = None
                     for plant in self.plants:
                         if int(plant.get("id", 0)) == int(self.fine_tune_instance_id):
@@ -1231,29 +2008,47 @@ class ImageLabel(QLabel):
                             # 在连线上创建新顶点
                             self._add_vertex_on_edge(closest_edge)
                     return
-                else:
-                    # 普通微调模式：处理顶点拖拽
-                    # 先检查是否点击了顶点
+
+                delete_vertex_hotkey = bool(event.modifiers() & Qt.AltModifier)
+                if self.delete_vertex_mode or delete_vertex_hotkey:
                     vertex_hit = self._find_vertex_hit(image_pos, instance_id=self.fine_tune_instance_id)
                     if vertex_hit:
-                        # 记录顶点的原始位置
-                        entity_id = vertex_hit["entity_id"]
-                        polygon_index = vertex_hit["polygon_index"]
-                        point_index = vertex_hit["point_index"]
-
-                        # 找到对应的实体和多边形
+                        entity = None
                         for plant in self.plants:
-                            if plant.get("id") == entity_id:
-                                polygons = plant.get("polygons", [])
-                                if polygon_index < len(polygons):
-                                    polygon = polygons[polygon_index]
-                                    if point_index < len(polygon):
-                                        vertex_hit["original_pos"] = polygon[point_index]
+                            if int(plant.get("id", 0)) == int(vertex_hit["entity_id"]):
+                                entity = plant
                                 break
+                        if entity:
+                            self._delete_vertex(entity, vertex_hit["polygon_index"], vertex_hit["point_index"])
+                    return
 
-                        self.vertex_drag_info = vertex_hit
-                        return
-                # 微调模式下点击空白区域，不执行任何操作
+                # 普通微调模式：
+                # 1. 点到顶点时直接进入拖拽
+                # 2. 点到多边形内部时选中该 polygon
+                # 3. 点空白则不处理
+                vertex_hit = self._find_vertex_hit(image_pos, instance_id=self.fine_tune_instance_id)
+                if vertex_hit:
+                    entity_id = vertex_hit["entity_id"]
+                    polygon_index = vertex_hit["polygon_index"]
+                    point_index = vertex_hit["point_index"]
+
+                    for plant in self.plants:
+                        if plant.get("id") == entity_id:
+                            polygons = plant.get("polygons", [])
+                            if polygon_index < len(polygons):
+                                polygon = polygons[polygon_index]
+                                if point_index < len(polygon):
+                                    vertex_hit["original_pos"] = polygon[point_index]
+                            break
+
+                    self.vertex_drag_info = vertex_hit
+                    return
+
+                hit_kind, hit_id = self._find_hit_entity(image_pos)
+                if hit_kind:
+                    self.select_entity(hit_kind, hit_id)
+                    return
+
                 return
 
             # 非微调模式：执行其他操作
@@ -1319,6 +2114,31 @@ class ImageLabel(QLabel):
             self.is_dragging = False
             self.setCursor(QCursor(Qt.ArrowCursor))
             return
+        if event.button() == Qt.LeftButton and self.preannotation_box_dragging:
+            self.preannotation_box_dragging = False
+            rect = self._normalize_box(self.preannotation_box_start, self.preannotation_box_end)
+            if rect:
+                self.preannotation_box_rect = rect
+                main_win = self.get_main_window()
+                if main_win and hasattr(main_win, "on_preannotation_box_completed"):
+                    main_win.on_preannotation_box_completed(rect)
+            else:
+                self.clear_preannotation_box()
+            return
+        if event.button() == Qt.LeftButton and self.split_line_dragging:
+            self.split_line_dragging = False
+            image_pos = self.screen_to_image(event.pos())
+            if image_pos:
+                self.split_line_end = image_pos
+            if self.split_line_start and self.split_line_end:
+                success, message = self.split_selected_staging_polygon(self.split_line_start, self.split_line_end, gap=5)
+                if not success:
+                    main_win = self.get_main_window()
+                    if main_win and hasattr(main_win, "sam_info_text"):
+                        main_win.sam_info_text.append(f"切割暂存区域失败: {message}")
+            else:
+                self.set_split_staging_mode(False)
+            return
         if event.button() == Qt.LeftButton and self.vertex_drag_info:
             # 记录顶点拖拽操作到撤销栈
             if self.mode == "fine_tune":
@@ -1368,6 +2188,19 @@ class ImageLabel(QLabel):
                                 self.fine_tune_stack.pop(0)
                             # 清空重做栈
                             self.fine_tune_redo_stack = []
+
+                            main_win = self.get_main_window()
+                            if main_win and hasattr(main_win, "record_preannotation_adjustment_action"):
+                                main_win.record_preannotation_adjustment_action(
+                                    entity_id,
+                                    "drag_vertex",
+                                    {
+                                        "polygon_index": polygon_index,
+                                        "point_index": point_index,
+                                        "old_position": old_position,
+                                        "new_position": new_position,
+                                    },
+                                )
 
                         # ====================== 核心修复：规范化时确保闭合多边形一致性 ======================
                         entity_kind = "formal"
@@ -1437,6 +2270,20 @@ class ImageLabel(QLabel):
                 self._update_dragging_vertex(image_pos)
             return
 
+        if self.preannotation_box_dragging:
+            image_pos = self.screen_to_image(event.pos())
+            if image_pos:
+                self.preannotation_box_end = image_pos
+                self.update_display()
+            return
+
+        if self.split_line_dragging:
+            image_pos = self.screen_to_image(event.pos())
+            if image_pos:
+                self.split_line_end = image_pos
+                self.update_display()
+            return
+
         if not self.is_summary:
             self.current_snap_point = self.calculate_snap_point(event.pos())
             self.update_display()
@@ -1468,7 +2315,11 @@ class ImageLabel(QLabel):
             self.update_display()
 
             main_win = self.get_main_window()
-            if main_win and not self.is_summary:
+            if (
+                main_win
+                and not self.is_summary
+                and getattr(main_win, "projection_enabled", False)
+            ):
                 main_win.sync_summary_view()
         except Exception as error:
             print(f"wheelEvent error: {error}")
@@ -1686,12 +2537,95 @@ class ImageLabel(QLabel):
         
         # 更新COCO数据
         touch_instance(entity)
-        
+
         # 通知主窗口更新
         self._notify_annotation_changed()
-        
+
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "record_preannotation_adjustment_action") and self.mode == "fine_tune":
+            main_win.record_preannotation_adjustment_action(
+                entity.get("id"),
+                "add_vertex",
+                {
+                    "polygon_index": polygon_index,
+                    "insert_index": insert_index,
+                    "new_vertex": new_vertex,
+                },
+            )
+        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+            main_win.on_entity_geometry_modified()
+
         # 刷新画布
         self.update_display()
+
+    def _delete_vertex(self, entity, polygon_index, point_index):
+        """删除指定顶点，保留至少 3 个有效顶点。"""
+        polygons = entity.get("polygons", [])
+        if polygon_index >= len(polygons):
+            return False
+
+        polygon = polygons[polygon_index]
+        is_closed = bool(polygon) and polygon[0] == polygon[-1]
+        valid_point_count = len(polygon) - 1 if is_closed else len(polygon)
+        if valid_point_count <= 3 or point_index >= valid_point_count:
+            return False
+
+        old_polygon = polygon.copy()
+        if is_closed:
+            base_polygon = polygon[:-1]
+            del base_polygon[point_index]
+            polygon = base_polygon + [base_polygon[0]]
+        else:
+            del polygon[point_index]
+
+        if self.mode == "fine_tune":
+            self.fine_tune_stack.append(
+                {
+                    "action": "delete_vertex",
+                    "entity_id": entity.get("id"),
+                    "polygon_index": polygon_index,
+                    "point_index": point_index,
+                    "old_polygon": old_polygon,
+                    "new_polygon": polygon.copy(),
+                }
+            )
+            if len(self.fine_tune_stack) > self.max_stack_depth:
+                self.fine_tune_stack.pop(0)
+            self.fine_tune_redo_stack = []
+
+        polygons[polygon_index] = polygon
+        entity["polygons"] = normalize_polygons(polygons)
+        touch_instance(entity)
+        self._notify_annotation_changed()
+
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "record_preannotation_adjustment_action") and self.mode == "fine_tune":
+            main_win.record_preannotation_adjustment_action(
+                entity.get("id"),
+                "delete_vertex",
+                {
+                    "polygon_index": polygon_index,
+                    "point_index": point_index,
+                    "deleted_position": old_polygon[point_index],
+                },
+            )
+        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+            main_win.on_entity_geometry_modified()
+
+        self.update_display()
+        return True
+
+    def _normalize_box(self, start_point, end_point):
+        """规范化框选矩形。"""
+        if not start_point or not end_point:
+            return None
+        x1 = min(float(start_point[0]), float(end_point[0]))
+        y1 = min(float(start_point[1]), float(end_point[1]))
+        x2 = max(float(start_point[0]), float(end_point[0]))
+        y2 = max(float(start_point[1]), float(end_point[1]))
+        if (x2 - x1) < 3 or (y2 - y1) < 3:
+            return None
+        return (x1, y1, x2, y2)
 
     def _update_dragging_vertex(self, image_pos):
         """实时更新拖拽顶点（修复版：拖拽首点自动同步尾点）。"""
@@ -1756,23 +2690,62 @@ class ImageLabel(QLabel):
         main_win = self.get_main_window()
         if main_win and entity_kind == "formal":
             main_win.sync_summary_view()
+    def _iter_preview_staging_areas(self):
+        labels = self._ensure_label_slots(self.current_plant_labels, len(self.current_plant_polygons))
+        self.current_plant_labels = labels
+        for index, polygon in enumerate(self.current_plant_polygons):
+            yield {
+                "id": self._make_staging_entity_id("preview", None, index),
+                "owner_kind": "preview",
+                "owner_id": None,
+                "polygon_index": index,
+                "polygon": polygon,
+                "polygons": [polygon],
+                "label": self._label_for_index(labels, index),
+            }
+
+    def _iter_formal_staging_areas(self, plant):
+        polygons = plant.get("polygons", [])
+        labels = self._ensure_label_slots(plant.get("labels", []), len(polygons))
+        plant["labels"] = labels
+        for index, polygon in enumerate(polygons):
+            yield {
+                "id": self._make_staging_entity_id("formal", plant.get("id"), index),
+                "owner_kind": "formal",
+                "owner_id": plant.get("id"),
+                "polygon_index": index,
+                "polygon": polygon,
+                "polygons": [polygon],
+                "label": self._label_for_index(labels, index),
+                "plant": plant,
+            }
+
+    @staticmethod
+    def _get_rightmost_point(polygon):
+        valid_points = list(polygon[:-1]) if polygon and polygon[0] == polygon[-1] else list(polygon or [])
+        if not valid_points:
+            return None
+        return max(valid_points, key=lambda point: (point[0], -point[1]))
+
     def _find_hit_entity(self, image_pos):
-        """按点击位置查找实例命中，候选优先于正式层。"""
+        """?????????????????????"""
         for candidate in reversed(self.candidate_instances):
             if self._point_hits_polygons(image_pos, candidate.get("polygons", [])):
                 return "candidate", candidate.get("candidate_id")
 
+        for area in reversed(list(self._iter_preview_staging_areas())):
+            if self._point_hits_polygons(image_pos, area.get("polygons", [])):
+                return "staging", area.get("id")
+
         for plant in reversed(self.plants):
+            if self.mode == "fine_tune" and int(plant.get("id", 0)) == int(self.fine_tune_instance_id or 0):
+                for area in reversed(list(self._iter_formal_staging_areas(plant))):
+                    if self._point_hits_polygons(image_pos, area.get("polygons", [])):
+                        return "staging", area.get("id")
             if self._point_hits_polygons(image_pos, plant.get("polygons", [])):
                 return "formal", plant.get("id")
-            
-            # 检查暂存区域
-            for area in reversed(plant.get("staging_areas", [])):
-                if self._point_hits_polygons(image_pos, area.get("polygons", [])):
-                    return "staging", area.get("id")
 
         return None, None
-
     def _point_hits_polygons(self, image_pos, polygons):
         """判断点是否命中 polygon。"""
         point = (float(image_pos[0]), float(image_pos[1]))
@@ -2096,26 +3069,40 @@ class ImageLabel(QLabel):
             return
 
         try:
+            widget_width = self.width()
+            widget_height = self.height()
+            if widget_width <= 0 or widget_height <= 0:
+                return
+
             img_width = self.raw_pixmap.width()
             img_height = self.raw_pixmap.height()
-            scaled_width = int(img_width * self.scale_factor)
-            scaled_height = int(img_height * self.scale_factor)
+            offset_x = widget_width / 2 - self.view_center_x * self.scale_factor
+            offset_y = widget_height / 2 - self.view_center_y * self.scale_factor
 
-            scaled_pixmap = self.raw_pixmap.scaled(
-                scaled_width,
-                scaled_height,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
+            view_half_width = widget_width / (2 * self.scale_factor)
+            view_half_height = widget_height / (2 * self.scale_factor)
+            src_left = max(0.0, self.view_center_x - view_half_width)
+            src_top = max(0.0, self.view_center_y - view_half_height)
+            src_right = min(float(img_width), self.view_center_x + view_half_width)
+            src_bottom = min(float(img_height), self.view_center_y + view_half_height)
 
-            offset_x = self.width() / 2 - self.view_center_x * self.scale_factor
-            offset_y = self.height() / 2 - self.view_center_y * self.scale_factor
+            src_width = max(0.0, src_right - src_left)
+            src_height = max(0.0, src_bottom - src_top)
 
             final_pixmap = QPixmap(self.size())
             final_pixmap.fill(QColor(240, 240, 240))
             painter = QPainter(final_pixmap)
             painter.setRenderHint(QPainter.Antialiasing)
-            painter.drawPixmap(int(offset_x), int(offset_y), scaled_pixmap)
+
+            if src_width > 0 and src_height > 0:
+                target_rect = QRectF(
+                    src_left * self.scale_factor + offset_x,
+                    src_top * self.scale_factor + offset_y,
+                    src_width * self.scale_factor,
+                    src_height * self.scale_factor,
+                )
+                source_rect = QRectF(src_left, src_top, src_width, src_height)
+                painter.drawPixmap(target_rect, self.raw_pixmap, source_rect)
 
             def img_to_screen(pt):
                 return QPoint(
@@ -2152,6 +3139,24 @@ class ImageLabel(QLabel):
                 painter.setPen(QPen(QColor(0, 0, 255), 2, Qt.DashLine))
                 painter.drawRect(qpt1.x(), qpt1.y(), qpt2.x() - qpt1.x(), qpt2.y() - qpt1.y())
 
+            active_box = None
+            if self.preannotation_box_dragging:
+                active_box = self._normalize_box(self.preannotation_box_start, self.preannotation_box_end)
+            elif self.preannotation_box_rect:
+                active_box = self.preannotation_box_rect
+            if active_box:
+                x1, y1, x2, y2 = active_box
+                qpt1 = img_to_screen((x1, y1))
+                qpt2 = img_to_screen((x2, y2))
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(0, 170, 255), 2, Qt.DashLine))
+                painter.drawRect(qpt1.x(), qpt1.y(), qpt2.x() - qpt1.x(), qpt2.y() - qpt1.y())
+
+            if self.split_staging_mode and self.split_line_start and self.split_line_end:
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(255, 140, 0), 3, Qt.DashLine))
+                painter.drawLine(img_to_screen(self.split_line_start), img_to_screen(self.split_line_end))
+
             painter.end()
             self.setPixmap(final_pixmap)
         except Exception as error:
@@ -2177,18 +3182,15 @@ class ImageLabel(QLabel):
                 for polygon in polygons:
                     if len(polygon) >= 3 and self._get_polygon_area(polygon) <= 0:
                         qpts = [img_to_screen(point) for point in polygon]
-                        if is_fine_tune:
-                            # 微调模式：红色点线
-                            weak_color = QColor(255, 0, 0, 30)
-                            temp_painter.setBrush(QBrush(weak_color))
-                            temp_painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.DashLine))
-                        elif summary_mode:
+                        if summary_mode:
                             temp_painter.setBrush(QBrush(plant_color))
                             temp_painter.setPen(QPen(QColor(255, 0, 0), 3) if is_selected else QPen(QColor(0, 0, 0), 1))
                         else:
-                            weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), 55)
+                            weak_alpha = 70 if is_fine_tune else 55
+                            weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), weak_alpha)
+                            line_color = QColor(255, 140, 0) if (is_selected or is_fine_tune) else QColor(100, 100, 100)
                             temp_painter.setBrush(QBrush(weak_color))
-                            temp_painter.setPen(QPen(QColor(255, 80, 80), 3) if is_selected else QPen(QColor(100, 100, 100), 1))
+                            temp_painter.setPen(QPen(line_color, 3 if (is_selected or is_fine_tune) else 1))
                         temp_painter.drawPolygon(*qpts)
                 
                 # 绘制所有内孔（面积为正的多边形）
@@ -2212,6 +3214,19 @@ class ImageLabel(QLabel):
             
             # 绘制暂存区域
             if not summary_mode:
+                for area in self._iter_formal_staging_areas(plant):
+                    area_id = area.get("id")
+                    is_staging_selected = self.selected_entity_kind == "staging" and self.selected_entity_id == str(area_id)
+                    polygon = area.get("polygon", [])
+                    if len(polygon) >= 3:
+                        qpts = [img_to_screen(point) for point in polygon]
+                        fill_color = QColor(0, 180, 255, 35 if not is_staging_selected else 70)
+                        line_color = QColor(0, 150, 255) if not is_staging_selected else QColor(255, 165, 0)
+                        painter.setBrush(QBrush(fill_color))
+                        painter.setPen(QPen(line_color, 2, Qt.DashLine))
+                        painter.drawPolygon(*qpts)
+                        if is_staging_selected:
+                            self._draw_polygon_vertices(painter, img_to_screen, [polygon], QColor(0, 150, 255))
                 staging_areas = plant.get("staging_areas", [])
                 for area in staging_areas:
                     area_id = area.get("id", 0)
@@ -2248,6 +3263,13 @@ class ImageLabel(QLabel):
                     # 绘制文字
                     painter.setPen(QPen(QColor(255, 0, 0), 1))
                     painter.drawText(label_point, f"plant {plant_id}")
+                for area in self._iter_formal_staging_areas(plant):
+                    rightmost_point = self._get_rightmost_point(area.get("polygon", []))
+                    if not rightmost_point:
+                        continue
+                    label_point = img_to_screen(rightmost_point)
+                    painter.setPen(QPen(QColor(20, 20, 20), 1))
+                    painter.drawText(label_point, area.get("label", "stem"))
 
     def _draw_candidate_instances(self, painter, img_to_screen):
         """绘制候选层。"""
@@ -2284,6 +3306,16 @@ class ImageLabel(QLabel):
                 for i, polygon in enumerate(self.current_plant_polygons):
                     if len(polygon) >= 3:
                         qpts = [img_to_screen(point) for point in polygon]
+                        is_preview_staging_selected = (
+                            self.selected_entity_kind == "staging"
+                            and self.selected_entity_id == self._make_staging_entity_id("preview", None, i)
+                        )
+                        if is_preview_staging_selected:
+                            temp_painter.setBrush(QBrush(QColor(255, 196, 0, 140)))
+                            temp_painter.setPen(QPen(QColor(255, 140, 0), 2, Qt.DashLine))
+                        else:
+                            temp_painter.setBrush(QBrush(temp_color))
+                            temp_painter.setPen(QPen(QColor(0, 150, 0), 2))
                         temp_painter.drawPolygon(*qpts)
                         
                         # 绘制区域 label
@@ -2297,6 +3329,8 @@ class ImageLabel(QLabel):
                             # 绘制文字
                             temp_painter.setPen(QPen(QColor(0, 0, 0), 1))
                             temp_painter.drawText(label_point, label)
+                        if is_preview_staging_selected:
+                            self._draw_polygon_vertices(temp_painter, img_to_screen, [polygon], QColor(255, 140, 0))
             
             # 绘制去除区域（挖空效果）
             if self.removal_regions:
@@ -2411,6 +3445,8 @@ class ImageLabel(QLabel):
                 main_win.sync_summary_view()
             if hasattr(main_win, "refresh_properties_panel"):
                 main_win.refresh_properties_panel()
+            if hasattr(main_win, "_update_staging_controls"):
+                main_win._update_staging_controls()
 
     def get_main_window(self):
         """获取主窗口。"""

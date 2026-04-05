@@ -164,6 +164,7 @@ def normalize_formal_instance(instance, fallback_id):
         "created_at": created_at,
         "updated_at": updated_at,
         "labels": instance.get("labels", []),
+        "preannotation_record_id": instance.get("preannotation_record_id"),
     }
     return normalized
 

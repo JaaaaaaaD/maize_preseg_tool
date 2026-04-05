@@ -37,6 +37,31 @@ class SingleStemTasselDataset(Dataset):
         self.samples = self._prepare_single_instance_samples(coco_container, image_paths)
         self.input_size = Config.INPUT_SIZE
 
+    @staticmethod
+    def _read_image_rgb(image_path):
+        """稳健读取图片，兼容 Windows 中文路径和 OpenCV 读图失败。"""
+        if not image_path or not os.path.exists(image_path):
+            return None
+
+        image = cv2.imread(image_path)
+        if image is not None:
+            return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        try:
+            buffer = np.fromfile(image_path, dtype=np.uint8)
+            if buffer.size > 0:
+                decoded = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+                if decoded is not None:
+                    return cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+        except Exception:
+            pass
+
+        try:
+            with Image.open(image_path) as pil_image:
+                return np.array(pil_image.convert("RGB"))
+        except Exception:
+            return None
+
     def _prepare_single_instance_samples(self, coco_container, image_paths):
         """将COCO多实例标注拆分为单株茎秆+雄穗样本"""
         samples = []
@@ -49,7 +74,10 @@ class SingleStemTasselDataset(Dataset):
                 continue
 
             # 读取原始图像尺寸
-            orig_img = cv2.imread(image_path)
+            orig_img = self._read_image_rgb(image_path)
+            if orig_img is None:
+                print(f"跳过无法读取的训练图片: {image_path}")
+                continue
             orig_h, orig_w = orig_img.shape[:2]
 
             # 遍历每一株玉米（单实例）
@@ -99,8 +127,9 @@ class SingleStemTasselDataset(Dataset):
         bbox = sample["bbox"]
 
         # 1. 加载并预处理图像（严格遵循SAM官方流程）
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = self._read_image_rgb(image_path)
+        if image is None:
+            raise ValueError(f"无法读取训练图片: {image_path}")
 
         # 2. 生成单实例掩码（仅茎秆+雄穗）
         mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
