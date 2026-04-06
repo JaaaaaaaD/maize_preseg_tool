@@ -1,5 +1,4 @@
 # 标注数据结构辅助函数
-import beifen
 import copy
 import hashlib
 import json
