@@ -1,5 +1,4 @@
 # 图像标注控件
-import beifen
 import math
 import traceback
 import copy
