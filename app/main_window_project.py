@@ -81,6 +81,7 @@ class MainWindowProjectMixin:
         if hasattr(self, "pause_annotation_timer"):
             self.pause_annotation_timer()
         self.preannotation_adjustment_records = []
+        self.preannotation_records_by_image = {}
         self.preannotation_record_counter = 1
         self.preannotation_fine_tune_sessions = {}
         self._clear_preannotation_candidate()

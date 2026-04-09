@@ -1,6 +1,6 @@
-# 工具栏组件
-from PyQt5.QtWidgets import (
+﻿from PyQt5.QtWidgets import (
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QLabel,
     QPushButton,
@@ -183,6 +183,11 @@ class Toolbars:
         parent.btn_split_staging_polygon.setEnabled(False)
         plant_layout.addWidget(parent.btn_split_staging_polygon)
 
+        parent.btn_merge_staging_polygon = QPushButton("合并暂存区域")
+        parent.btn_merge_staging_polygon.clicked.connect(parent.toggle_merge_staging_polygon)
+        parent.btn_merge_staging_polygon.setEnabled(False)
+        plant_layout.addWidget(parent.btn_merge_staging_polygon)
+
         parent.btn_undo_delete = QPushButton("撤销删除植株")
         parent.btn_undo_delete.clicked.connect(parent.undo_delete_plant)
         plant_layout.addWidget(parent.btn_undo_delete)
@@ -205,7 +210,7 @@ class Toolbars:
 
     @staticmethod
     def create_sam_toolbar(parent):
-        sam_group = QGroupBox("SAM辅助")
+        sam_group = QGroupBox("SAM模型")
         sam_layout = QVBoxLayout()
         sam_group.setLayout(sam_layout)
 
@@ -216,31 +221,75 @@ class Toolbars:
         parent.btn_sam_train = QPushButton("开始训练")
         parent.btn_sam_train.clicked.connect(parent.start_sam_training)
         sam_layout.addWidget(parent.btn_sam_train)
+        return sam_group
+
+    @staticmethod
+    def create_preannotation_toolbar(parent):
+        preannotation_group = QGroupBox("预标注")
+        preannotation_layout = QVBoxLayout()
+        controls_layout = QGridLayout()
+        controls_layout.setHorizontalSpacing(8)
+        controls_layout.setVerticalSpacing(6)
+        preannotation_group.setLayout(preannotation_layout)
 
         parent.btn_sam_preannotate = QPushButton("框选预标注")
         parent.btn_sam_preannotate.clicked.connect(parent.run_sam_preannotation)
-        sam_layout.addWidget(parent.btn_sam_preannotate)
+        controls_layout.addWidget(parent.btn_sam_preannotate, 0, 0)
 
         parent.btn_sam_select_mode = QPushButton("接受候选并微调")
         parent.btn_sam_select_mode.clicked.connect(parent.enter_sam_select_mode)
         parent.btn_sam_select_mode.setEnabled(False)
-        sam_layout.addWidget(parent.btn_sam_select_mode)
+        controls_layout.addWidget(parent.btn_sam_select_mode, 0, 1)
 
-        parent.btn_save_staging_areas = QPushButton("拒绝当前候选")
+        controls_layout.addWidget(QLabel("当前理由"), 1, 0)
+        parent.combo_preannotation_reason = NoWheelComboBox()
+        parent.combo_preannotation_reason.addItem("未指定理由", "")
+        parent.combo_preannotation_reason.addItem("茎支撑弱", "weak_stem_support")
+        parent.combo_preannotation_reason.addItem("跨入邻居区域", "cross_neighbor_region")
+        parent.combo_preannotation_reason.addItem("孤立碎片", "isolated_fragment")
+        parent.combo_preannotation_reason.addItem("遮挡过重", "occlusion_too_heavy")
+        parent.combo_preannotation_reason.addItem("仅边界精修", "boundary_refined_only")
+        parent.combo_preannotation_reason.currentIndexChanged.connect(parent.on_preannotation_reason_changed)
+        controls_layout.addWidget(parent.combo_preannotation_reason, 2, 0)
+
+        controls_layout.addWidget(QLabel("语义判决"), 1, 1)
+        parent.combo_preannotation_semantic_action = NoWheelComboBox()
+        parent.combo_preannotation_semantic_action.addItem("自动推断", "__auto__")
+        parent.combo_preannotation_semantic_action.addItem("保留", "keep")
+        parent.combo_preannotation_semantic_action.addItem("修剪", "trim")
+        parent.combo_preannotation_semantic_action.addItem("切分", "split")
+        parent.combo_preannotation_semantic_action.addItem("合并", "merge")
+        parent.combo_preannotation_semantic_action.addItem("改标", "relabel")
+        parent.combo_preannotation_semantic_action.addItem("忽略", "ignore")
+        parent.combo_preannotation_semantic_action.addItem("拒绝", "reject")
+        parent.combo_preannotation_semantic_action.currentIndexChanged.connect(
+            parent.on_preannotation_semantic_action_changed
+        )
+        controls_layout.addWidget(parent.combo_preannotation_semantic_action, 2, 1)
+
+        parent.btn_save_staging_areas = QPushButton("拒绝当前 proposal")
         parent.btn_save_staging_areas.clicked.connect(parent.save_selected_staging_areas)
         parent.btn_save_staging_areas.setEnabled(False)
-        sam_layout.addWidget(parent.btn_save_staging_areas)
+        controls_layout.addWidget(parent.btn_save_staging_areas, 3, 0)
+
+        parent.btn_ignore_preannotation = QPushButton("忽略当前 proposal")
+        parent.btn_ignore_preannotation.clicked.connect(parent.ignore_selected_preannotation)
+        parent.btn_ignore_preannotation.setEnabled(False)
+        controls_layout.addWidget(parent.btn_ignore_preannotation, 3, 1)
 
         parent.btn_export_preannotation_records = QPushButton("导出预标注调整记录")
         parent.btn_export_preannotation_records.clicked.connect(parent.export_preannotation_adjustments)
-        sam_layout.addWidget(parent.btn_export_preannotation_records)
+        controls_layout.addWidget(parent.btn_export_preannotation_records, 4, 0, 1, 2)
+
+        preannotation_layout.addLayout(controls_layout)
 
         parent.sam_info_text = QTextEdit()
         parent.sam_info_text.setReadOnly(True)
-        parent.sam_info_text.setMinimumHeight(60)
+        parent.sam_info_text.setMinimumHeight(64)
+        parent.sam_info_text.setMaximumHeight(96)
         parent.sam_info_text.setPlaceholderText("SAM 信息将显示在这里...")
-        sam_layout.addWidget(parent.sam_info_text)
-        return sam_group
+        preannotation_layout.addWidget(parent.sam_info_text)
+        return preannotation_group
 
     @staticmethod
     def create_aux_toolbar(parent):
@@ -269,6 +318,8 @@ def _apply_toolbar_button_accents(parent):
         ("btn_save_plant", "primary"),
         ("btn_sam_train", "primary"),
         ("btn_sam_preannotate", "primary"),
+        ("btn_save_staging_areas", "danger"),
+        ("btn_ignore_preannotation", "muted"),
         ("btn_delete", "danger"),
         ("btn_delete_staging_polygon", "danger"),
         ("btn_removal_region", "danger"),

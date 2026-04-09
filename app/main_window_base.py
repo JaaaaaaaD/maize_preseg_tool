@@ -1,4 +1,4 @@
-import os
+﻿import os
 from time import monotonic
 
 from PyQt5.QtCore import Qt, QTimer
@@ -28,12 +28,13 @@ from utils.annotation_schema import (
     normalize_annotation_timing_state,
 )
 from utils.interaction_state import InteractionStateMachine
+from utils.preannotation_records import SEMANTIC_ACTION_AUTO
 
 
 class MainWindowBase(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("玉米标注与项目级预标注闭环工具")
+        self.setWindowTitle("玉米标注与项目级预标注工具")
         self.setMinimumSize(1024, 680)
 
         self.image_paths = []
@@ -67,8 +68,12 @@ class MainWindowBase(QMainWindow):
         self.sam_training_worker = None
         self.current_preannotation_candidate = None
         self.preannotation_adjustment_records = []
+        self.preannotation_records_by_image = {}
         self.preannotation_record_counter = 1
         self.preannotation_fine_tune_sessions = {}
+        self.preannotation_default_reason_code = None
+        self.preannotation_default_semantic_action = SEMANTIC_ACTION_AUTO
+        self._updating_preannotation_controls = False
         self.interaction_state_machine = InteractionStateMachine()
         self.annotation_timer = QTimer(self)
         self.annotation_timer.setInterval(1000)
@@ -104,7 +109,6 @@ class MainWindowBase(QMainWindow):
         return None
 
     def apply_window_theme(self):
-        """统一主窗口和工具栏视觉风格。"""
         self.setStyleSheet(
             """
             QMainWindow {
@@ -233,17 +237,20 @@ class MainWindowBase(QMainWindow):
         )
 
     def apply_toolbar_compaction(self):
-        """压缩过长文案并补充按钮语义样式。"""
         if hasattr(self, "btn_delete_staging_polygon"):
-            self.btn_delete_staging_polygon.setText(f"删除选区/去除区 ({SHORTCUTS['DELETE_STAGING_POLYGON']})")
+            self.btn_delete_staging_polygon.setText(
+                f"删除选中区域/去除区域 ({SHORTCUTS['DELETE_STAGING_POLYGON']})"
+            )
         for button_name, accent in (
             ("btn_save_plant", "primary"),
             ("btn_sam_train", "primary"),
             ("btn_sam_preannotate", "primary"),
             ("btn_timer_start", "primary"),
+            ("btn_save_staging_areas", "danger"),
             ("btn_delete", "danger"),
             ("btn_delete_staging_polygon", "danger"),
             ("btn_removal_region", "danger"),
+            ("btn_ignore_preannotation", "muted"),
             ("btn_refresh", "muted"),
             ("btn_toggle_annotation", "muted"),
             ("btn_prev", "muted"),
@@ -273,6 +280,8 @@ class MainWindowBase(QMainWindow):
         if self.left_label.mode == "fine_tune":
             if self.left_label.split_staging_mode:
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_SPLIT_STAGING)
+            if getattr(self.left_label, "merge_staging_mode", False):
+                return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_MERGE_STAGING)
             if getattr(self.left_label, "delete_vertex_mode", False):
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_DELETE_VERTEX)
             if self.left_label.add_vertex_mode:
@@ -281,7 +290,6 @@ class MainWindowBase(QMainWindow):
         return self.interaction_state_machine.force(InteractionStateMachine.IDLE)
 
     def init_ui(self):
-        """初始化 UI。"""
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -320,9 +328,19 @@ class MainWindowBase(QMainWindow):
         )
         images_layout.addWidget(self.left_label, 1)
 
+        right_canvas_panel = QWidget()
+        right_canvas_layout = QVBoxLayout(right_canvas_panel)
+        right_canvas_layout.setContentsMargins(0, 0, 0, 0)
+        right_canvas_layout.setSpacing(8)
+
         self.right_label = ImageLabel(is_summary=True, parent=self)
         self.right_label.setToolTip("正式实例总览，不显示候选层")
-        images_layout.addWidget(self.right_label, 1)
+        right_canvas_layout.addWidget(self.right_label, 3)
+        self.preannotation_panel = Toolbars.create_preannotation_toolbar(self)
+        right_canvas_layout.addWidget(self.preannotation_panel, 1)
+        right_canvas_layout.setStretch(0, 3)
+        right_canvas_layout.setStretch(1, 1)
+        images_layout.addWidget(right_canvas_panel, 1)
         main_splitter.addWidget(center_panel)
 
         right_panel = QWidget()
@@ -345,7 +363,6 @@ class MainWindowBase(QMainWindow):
         main_splitter.setSizes([250, 1250, 320])
 
     def create_scroll_panel(self, widget, min_width, preferred_width):
-        """为侧栏创建滚动容器，避免小分辨率下内容被截断。"""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
@@ -356,7 +373,6 @@ class MainWindowBase(QMainWindow):
         return scroll
 
     def resize_to_available_screen(self):
-        """根据当前屏幕可用区域设置初始窗口大小并居中。"""
         screen = QApplication.primaryScreen()
         if screen is None:
             self.resize(1600, 900)
@@ -374,7 +390,6 @@ class MainWindowBase(QMainWindow):
         self.move(x, y)
 
     def init_shortcuts(self):
-        """初始化快捷键。"""
         QShortcut(QKeySequence(SHORTCUTS["SAVE_POLYGON"]), self, self.save_current_polygon)
         QShortcut(QKeySequence(SHORTCUTS["SAVE_PLANT"]), self, self.save_plant)
         QShortcut(QKeySequence(SHORTCUTS["UNDO"]), self, self.undo)
@@ -388,7 +403,6 @@ class MainWindowBase(QMainWindow):
         QShortcut(QKeySequence(SHORTCUTS["TOGGLE_IGNORE_REGION"]), self, self.toggle_ignore_region)
 
     def restore_button_texts(self):
-        """集中恢复动态和静态按钮文本，避免异常回调后出现空白按钮。"""
         if hasattr(self, "btn_save_polygon"):
             self.btn_save_polygon.setText(f"暂存当前区域 ({SHORTCUTS['SAVE_POLYGON']})")
         if hasattr(self, "btn_save_plant"):
@@ -406,15 +420,17 @@ class MainWindowBase(QMainWindow):
         if hasattr(self, "btn_delete"):
             self.btn_delete.setText(f"删除选中植株 ({SHORTCUTS['DELETE_PLANT']})")
         if hasattr(self, "btn_delete_staging_polygon"):
-            self.btn_delete_staging_polygon.setText(f"删除选中的区域/去除区域 ({SHORTCUTS['DELETE_STAGING_POLYGON']})")
+            self.btn_delete_staging_polygon.setText(
+                f"删除选中区域/去除区域 ({SHORTCUTS['DELETE_STAGING_POLYGON']})"
+            )
         if hasattr(self, "btn_delete_vertex"):
             self.btn_delete_vertex.setText("删除顶点")
         if hasattr(self, "btn_load_batch"):
             self.btn_load_batch.setText(f"批量加载图片 ({SHORTCUTS['LOAD_BATCH']})")
         if hasattr(self, "btn_load_folder"):
-            self.btn_load_folder.setText("从文件夹加载图片与COCO")
+            self.btn_load_folder.setText("从文件夹加载图片（非 COCO）")
         if hasattr(self, "btn_export_annotated"):
-            self.btn_export_annotated.setText("批量导出已完成")
+            self.btn_export_annotated.setText("批量导出已完成(coco格式)")
         if hasattr(self, "btn_help"):
             self.btn_help.setText("使用说明")
         if hasattr(self, "btn_debug_coco"):
@@ -433,12 +449,16 @@ class MainWindowBase(QMainWindow):
             self.update_snap_button_state()
         if hasattr(self, "btn_start_training"):
             self.btn_start_training.setText("开始训练")
+        if hasattr(self, "btn_sam_train"):
+            self.btn_sam_train.setText("开始训练")
         if hasattr(self, "btn_sam_preannotate"):
             self.btn_sam_preannotate.setText("取消框选预标注" if self.left_label.preannotation_box_mode else "框选预标注")
         if hasattr(self, "btn_sam_select_mode"):
             self.btn_sam_select_mode.setText("接受候选并微调")
         if hasattr(self, "btn_save_staging_areas"):
-            self.btn_save_staging_areas.setText("拒绝当前候选")
+            self.btn_save_staging_areas.setText("拒绝当前 proposal")
+        if hasattr(self, "btn_ignore_preannotation"):
+            self.btn_ignore_preannotation.setText("忽略当前 proposal")
         if hasattr(self, "btn_export_preannotation_records"):
             self.btn_export_preannotation_records.setText("导出预标注调整记录")
         if hasattr(self, "btn_export_weights"):
@@ -537,7 +557,6 @@ class MainWindowBase(QMainWindow):
             self.update_status_bar()
 
     def restore_button_visuals(self):
-        """训练异常后强制刷新按钮调色板和重绘，避免按钮文字可见性丢失。"""
         for button in self.findChildren(QPushButton):
             palette = button.palette()
             background = palette.color(QPalette.Button)
@@ -553,3 +572,4 @@ class MainWindowBase(QMainWindow):
                 button.style().unpolish(button)
                 button.style().polish(button)
             button.update()
+

@@ -21,6 +21,7 @@ from utils.annotation_schema import (
 from utils.auxiliary_algorithms import convert_mask_to_polygon, perform_region_growing
 from utils.helpers import calculate_polygon_area, get_plant_color
 from utils.image_processor import preprocess_image
+from utils.sam_utils import mask_to_polygons, process_sam_polygons
 
 
 class ImageLabel(QLabel):
@@ -115,6 +116,8 @@ class ImageLabel(QLabel):
         self.split_line_dragging = False
         self.split_line_start = None
         self.split_line_end = None
+        self.merge_staging_mode = False
+        self.merge_staging_clicks = []
         self.preannotation_box_mode = False
         self.preannotation_box_dragging = False
         self.preannotation_box_start = None
@@ -151,10 +154,26 @@ class ImageLabel(QLabel):
             self.split_line_dragging = False
             self.split_line_start = None
             self.split_line_end = None
+        elif self.merge_staging_mode:
+            self.set_merge_staging_mode(False)
         main_win = self.get_main_window()
         if main_win and hasattr(main_win, "sync_interaction_state"):
             main_win.sync_interaction_state()
         self.update_display()
+
+    def set_merge_staging_mode(self, enabled):
+        self.merge_staging_mode = bool(enabled)
+        if not enabled:
+            self.merge_staging_clicks = []
+        elif self.split_staging_mode:
+            self.set_split_staging_mode(False)
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def _is_fine_tune_interaction_active(self):
+        return self.mode == "fine_tune" and bool(self.fine_tune_instance_id)
 
     @staticmethod
     def _label_for_index(labels, index, default="stem"):
@@ -234,6 +253,397 @@ class ImageLabel(QLabel):
         preview_labels = [self._label_for_index(normalized_labels, index) for index in range(len(outer_indices))]
         removal_regions = [copy.deepcopy(normalized_polygons[index]) for index in removal_indices]
         return preview_polygons, preview_labels, removal_regions
+
+    def _extract_split_polygons_from_mask(self, mask, min_x, min_y, source_polygon):
+        split_polygons = []
+
+        local_polygons = process_sam_polygons(mask_to_polygons(mask, pixel_interval=50))
+        for polygon in local_polygons:
+            shifted_points = [(float(point[0] + min_x), float(point[1] + min_y)) for point in polygon]
+            normalized = normalize_polygons([shifted_points])
+            if not normalized:
+                continue
+            split_polygons.append(normalized[0])
+
+        split_polygons.sort(key=lambda item: abs(calculate_polygon_area(item)), reverse=True)
+        if len(split_polygons) > 2:
+            split_polygons = split_polygons[:2]
+        return split_polygons
+
+    @staticmethod
+    def _same_staging_owner(first_staging, second_staging):
+        if not first_staging or not second_staging:
+            return False
+        if first_staging.get("owner_kind") != second_staging.get("owner_kind"):
+            return False
+        if first_staging.get("owner_kind") == "formal":
+            return int(first_staging.get("owner_id") or 0) == int(second_staging.get("owner_id") or 0)
+        return True
+
+    def _extract_single_polygon_from_mask(self, mask, min_x, min_y):
+        polygons = []
+        local_polygons = process_sam_polygons(mask_to_polygons(mask, pixel_interval=50))
+        for polygon in local_polygons:
+            shifted_points = [(float(point[0] + min_x), float(point[1] + min_y)) for point in polygon]
+            normalized = normalize_polygons([shifted_points])
+            if normalized:
+                polygons.append(normalized[0])
+        polygons.sort(key=lambda item: abs(calculate_polygon_area(item)), reverse=True)
+        return polygons
+
+    @staticmethod
+    def _open_polygon_vertices(polygon):
+        points = list(polygon or [])
+        if len(points) >= 2 and points[0] == points[-1]:
+            points = points[:-1]
+        return points
+
+    @staticmethod
+    def _cyclic_path(points, start_index, end_index):
+        count = len(points)
+        if count == 0:
+            return []
+        path = [points[start_index]]
+        index = start_index
+        while index != end_index:
+            index = (index + 1) % count
+            path.append(points[index])
+        return path
+
+    def _path_distance_score(self, path_points, other_polygon):
+        contour = np.array(other_polygon, dtype=np.float32)
+        if contour.ndim != 2 or contour.shape[0] < 3:
+            return float("inf")
+
+        samples = []
+        for index, point in enumerate(path_points):
+            samples.append(point)
+            if index + 1 < len(path_points):
+                next_point = path_points[index + 1]
+                samples.append(
+                    (
+                        (float(point[0]) + float(next_point[0])) / 2.0,
+                        (float(point[1]) + float(next_point[1])) / 2.0,
+                    )
+                )
+
+        if not samples:
+            return float("inf")
+
+        distances = []
+        for sample in samples:
+            distance = cv2.pointPolygonTest(
+                contour,
+                (float(sample[0]), float(sample[1])),
+                True,
+            )
+            distances.append(abs(float(distance)))
+        return sum(distances) / len(distances)
+
+    def _select_preserved_merge_path(self, polygon, start_index, end_index, other_polygon):
+        vertices = self._open_polygon_vertices(polygon)
+        if len(vertices) < 3:
+            return None
+        if start_index == end_index:
+            return None
+        if start_index >= len(vertices) or end_index >= len(vertices):
+            return None
+
+        forward_path = self._cyclic_path(vertices, start_index, end_index)
+        backward_path = list(reversed(self._cyclic_path(vertices, end_index, start_index)))
+        if len(forward_path) < 2 or len(backward_path) < 2:
+            return None
+
+        forward_score = self._path_distance_score(forward_path, other_polygon)
+        backward_score = self._path_distance_score(backward_path, other_polygon)
+        if forward_score > backward_score:
+            return forward_path
+        if backward_score > forward_score:
+            return backward_path
+
+        if len(forward_path) > len(backward_path):
+            return forward_path
+        return backward_path
+
+    @staticmethod
+    def _append_unique_points(target, points):
+        for point in points:
+            normalized_point = (float(point[0]), float(point[1]))
+            if not target or target[-1] != normalized_point:
+                target.append(normalized_point)
+        return target
+
+    def _merge_polygons_via_points(self, first_click, second_click, bridge_width=5):
+        first_staging = self._resolve_staging_entity((first_click or {}).get("staging_id"))
+        second_staging = self._resolve_staging_entity((second_click or {}).get("staging_id"))
+        if not first_staging or not second_staging:
+            return None, "请依次点击两个暂存区域"
+
+        first_polygon = self._open_polygon_vertices(first_staging.get("polygon", []))
+        second_polygon = self._open_polygon_vertices(second_staging.get("polygon", []))
+        if len(first_polygon) < 3 or len(second_polygon) < 3:
+            return None, "用于合并的区域无效"
+
+        first_clicks = [click for click in self.merge_staging_clicks if click.get("staging_id") == first_click.get("staging_id")]
+        second_clicks = [click for click in self.merge_staging_clicks if click.get("staging_id") == second_click.get("staging_id")]
+        if len(first_clicks) < 2 or len(second_clicks) < 2:
+            return None, "每个暂存区域需要点击两个点"
+
+        first_indices = [int(click.get("point_index", -1)) for click in first_clicks[:2]]
+        second_indices = [int(click.get("point_index", -1)) for click in second_clicks[:2]]
+        if any(index < 0 for index in first_indices + second_indices):
+            return None, "请选择有效的顶点"
+        if len(set(first_indices)) < 2 or len(set(second_indices)) < 2:
+            return None, "同一区域的两个点不能是同一个顶点"
+
+        first_preserved_path = self._select_preserved_merge_path(
+            first_polygon,
+            first_indices[0],
+            first_indices[1],
+            second_polygon,
+        )
+        second_preserved_path = self._select_preserved_merge_path(
+            second_polygon,
+            second_indices[0],
+            second_indices[1],
+            first_polygon,
+        )
+        if not first_preserved_path or not second_preserved_path:
+            return None, "无法根据选中的顶点生成合并边界"
+
+        merged_polygon = []
+        self._append_unique_points(merged_polygon, first_preserved_path)
+        self._append_unique_points(merged_polygon, list(reversed(second_preserved_path)))
+        if len(merged_polygon) < 3:
+            return None, "合并后未形成有效区域"
+        if merged_polygon[0] != merged_polygon[-1]:
+            merged_polygon.append(merged_polygon[0])
+
+        normalized = normalize_polygons([merged_polygon])
+        if not normalized:
+            return None, "合并后未形成有效区域"
+        return normalized[0], None
+
+    def _handle_merge_staging_click(self, image_pos):
+        staging_areas = list(self._iter_active_fine_tune_staging_areas())
+        vertex_hit = self._find_vertex_hit(image_pos, entity_candidates=staging_areas)
+        if vertex_hit is not None:
+            staging_id = str(vertex_hit.get("entity_id"))
+            staging = self._resolve_staging_entity(staging_id)
+            if not staging:
+                return False, "请先点击暂存区域"
+
+            point = staging.get("polygon", [])[vertex_hit["point_index"]]
+            click_entry = {
+                "staging_id": staging_id,
+                "point": (float(point[0]), float(point[1])),
+                "point_index": int(vertex_hit["point_index"]),
+            }
+            self.select_entity("staging", staging_id)
+
+            click_count = len(self.merge_staging_clicks)
+            if click_count == 0:
+                self.merge_staging_clicks = [click_entry]
+                self.update_display()
+                return True, "请在第一个暂存区域中点击第二个顶点"
+
+            first_click = self.merge_staging_clicks[0]
+            first_staging = self._resolve_staging_entity(first_click.get("staging_id"))
+            if not first_staging:
+                self.merge_staging_clicks = [click_entry]
+                self.update_display()
+                return True, "请在第一个暂存区域中点击第二个顶点"
+
+            if click_count == 1:
+                if staging_id != first_click.get("staging_id"):
+                    self.merge_staging_clicks = [click_entry]
+                    self.update_display()
+                    return False, "前两个点需要落在同一个暂存区域上"
+                self.merge_staging_clicks.append(click_entry)
+                self.update_display()
+                return True, "请在第二个暂存区域中点击第一个顶点"
+
+            second_staging_id = self.merge_staging_clicks[2].get("staging_id") if click_count >= 3 else None
+            second_staging = self._resolve_staging_entity(second_staging_id) if second_staging_id else None
+
+            if click_count == 2:
+                if staging_id == first_click.get("staging_id"):
+                    self.merge_staging_clicks = [click_entry]
+                    self.update_display()
+                    return False, "第三个点需要落在另一个暂存区域上"
+                if not self._same_staging_owner(first_staging, staging):
+                    self.merge_staging_clicks = [click_entry]
+                    self.update_display()
+                    return False, "只能合并同一实例下的两个暂存区域"
+
+                first_label = first_staging.get("label") or "stem"
+                second_label = staging.get("label") or "stem"
+                if first_label != second_label:
+                    from PyQt5.QtWidgets import QInputDialog
+
+                    label, ok = QInputDialog.getItem(
+                        self.parent(),
+                        "选择合并后的标签",
+                        f"两个暂存区域的标签不一致\n第一个区域: {first_label}\n第二个区域: {second_label}\n请选择合并后的标签:",
+                        [first_label, second_label, "stem"],
+                        0,
+                        False,
+                    )
+                    if not ok:
+                        self.update_display()
+                        return False, "取消合并操作"
+
+                    self.select_entity("staging", staging_id)
+                    self.update_selected_staging_label(label)
+                    self.select_entity("staging", first_click.get("staging_id"))
+                    self.update_selected_staging_label(label)
+
+                self.merge_staging_clicks.append(click_entry)
+                self.update_display()
+                return True, "请在第二个暂存区域中点击第二个顶点"
+
+            if click_count == 3:
+                if not second_staging or staging_id != second_staging_id:
+                    self.merge_staging_clicks = [click_entry]
+                    self.update_display()
+                    return False, "后两个点需要落在同一个暂存区域上"
+
+                self.merge_staging_clicks.append(click_entry)
+                self.update_display()
+
+                success, message = self.merge_selected_staging_polygons(
+                    self.merge_staging_clicks[0],
+                    self.merge_staging_clicks[2],
+                )
+                if not success:
+                    self.merge_staging_clicks = self.merge_staging_clicks[:2]
+                    self.update_display()
+                    return False, message
+                self.merge_staging_clicks = []
+                return True, message
+
+            self.merge_staging_clicks = [click_entry]
+            self.update_display()
+            return True, "已重置选择，请在第一个暂存区域中点击第一个顶点"
+
+        return False, "请点击暂存区域的顶点"
+
+
+    def merge_selected_staging_polygons(self, first_click, second_click, bridge_width=5):
+        first_staging = self._resolve_staging_entity((first_click or {}).get("staging_id"))
+        second_staging = self._resolve_staging_entity((second_click or {}).get("staging_id"))
+        if not first_staging or not second_staging:
+            return False, "请依次点击两个暂存区域"
+        if not self._same_staging_owner(first_staging, second_staging):
+            return False, "只能合并同一实例下的两个暂存区域"
+
+        merged_polygon, error_message = self._merge_polygons_via_points(
+            first_click,
+            second_click,
+            bridge_width=bridge_width,
+        )
+        if merged_polygon is None:
+            return False, error_message or "暂存区域合并失败"
+
+        if first_staging["owner_kind"] == "preview":
+            old_polygons = copy.deepcopy(self.current_plant_polygons)
+            old_labels = copy.deepcopy(self.current_plant_labels)
+            first_index, second_index = sorted((int(first_staging["polygon_index"]), int(second_staging["polygon_index"])))
+            labels = self._ensure_label_slots(self.current_plant_labels, len(old_polygons))
+            merged_label = first_staging.get("label") or second_staging.get("label") or "stem"
+
+            new_polygons = []
+            for index, polygon in enumerate(self.current_plant_polygons):
+                if index == first_index:
+                    new_polygons.append(merged_polygon)
+                elif index == second_index:
+                    continue
+                else:
+                    new_polygons.append(polygon)
+            self.current_plant_polygons = normalize_polygons(new_polygons)
+            self.current_plant_labels = labels[:first_index] + [merged_label] + labels[first_index + 1:second_index] + labels[second_index + 1:]
+            self._record_preview_state_change(
+                old_polygons,
+                old_labels,
+                "merge_polygon",
+                {
+                    "first_polygon_index": first_index,
+                    "second_polygon_index": second_index,
+                    "first_point": copy.deepcopy(first_click.get("point")),
+                    "second_point": copy.deepcopy(second_click.get("point")),
+                },
+            )
+            self.select_entity("staging", self._make_staging_entity_id("preview", None, first_index))
+        else:
+            plant = first_staging.get("plant")
+            if not plant or int(plant.get("id", 0)) != int(second_staging.get("owner_id") or 0):
+                return False, "只能合并同一实例下的两个暂存区域"
+
+            old_polygons = copy.deepcopy(plant.get("polygons", []))
+            old_labels = copy.deepcopy(plant.get("labels", []))
+            first_label_index, second_label_index = sorted(
+                (int(first_staging["polygon_index"]), int(second_staging["polygon_index"]))
+            )
+            first_actual_index, second_actual_index = sorted(
+                (
+                    int(first_staging.get("actual_polygon_index", first_label_index)),
+                    int(second_staging.get("actual_polygon_index", second_label_index)),
+                )
+            )
+            merged_label = first_staging.get("label") or second_staging.get("label") or "stem"
+            polygons = list(plant.get("polygons", []) or [])
+            merged_polygons = []
+            for index, polygon in enumerate(polygons):
+                if index == first_actual_index:
+                    merged_polygons.append(merged_polygon)
+                elif index == second_actual_index:
+                    continue
+                else:
+                    merged_polygons.append(polygon)
+            plant["polygons"] = normalize_polygons(merged_polygons)
+
+            labels = list(plant.get("labels", []) or [])
+            while len(labels) <= max(first_label_index, second_label_index):
+                labels.append("stem")
+            plant["labels"] = (
+                labels[:first_label_index]
+                + [merged_label]
+                + labels[first_label_index + 1:second_label_index]
+                + labels[second_label_index + 1:]
+            )
+            touch_instance(plant, "ai_modified" if plant.get("source") in ("ai_accepted", "ai_assisted") else None)
+            self._record_fine_tune_state_change(
+                plant,
+                old_polygons,
+                old_labels,
+                "merge_polygon",
+                {
+                    "first_polygon_index": first_label_index,
+                    "second_polygon_index": second_label_index,
+                    "first_actual_polygon_index": first_actual_index,
+                    "second_actual_polygon_index": second_actual_index,
+                    "first_point": copy.deepcopy(first_click.get("point")),
+                    "second_point": copy.deepcopy(second_click.get("point")),
+                },
+            )
+            self._notify_preannotation_adjustment(
+                plant.get("id"),
+                "merge_staging_polygon",
+                {
+                    "first_polygon_index": first_label_index,
+                    "second_polygon_index": second_label_index,
+                    "first_actual_polygon_index": first_actual_index,
+                    "second_actual_polygon_index": second_actual_index,
+                    "first_point": copy.deepcopy(first_click.get("point")),
+                    "second_point": copy.deepcopy(second_click.get("point")),
+                },
+            )
+            self.select_entity("staging", self._make_staging_entity_id("formal", plant.get("id"), first_label_index))
+
+        self.set_merge_staging_mode(False)
+        self._notify_annotation_changed()
+        self.update_display()
+        return True, "暂存区域已合并"
 
     def _compose_preview_instance_data(self):
         preview_polygons = normalize_polygons(copy.deepcopy(self.current_plant_polygons))
@@ -370,6 +780,7 @@ class ImageLabel(QLabel):
         if self.mode != "fine_tune":
             return
         self.add_vertex_mode = True
+        self.set_merge_staging_mode(False)
         main_win = self.get_main_window()
         if main_win and hasattr(main_win, "sync_interaction_state"):
             main_win.sync_interaction_state()
@@ -388,6 +799,7 @@ class ImageLabel(QLabel):
         if self.mode != "fine_tune":
             return
         self.delete_vertex_mode = True
+        self.set_merge_staging_mode(False)
         main_win = self.get_main_window()
         if main_win and hasattr(main_win, "sync_interaction_state"):
             main_win.sync_interaction_state()
@@ -446,6 +858,7 @@ class ImageLabel(QLabel):
         self.fine_tune_original_data = {}
         self.add_vertex_mode = False
         self.delete_vertex_mode = False
+        self.set_merge_staging_mode(False)
         self.current_points = []
         self.current_ignored_points = []
         self.ignoring_region = False
@@ -493,6 +906,7 @@ class ImageLabel(QLabel):
             self.current_snap_point = None
             self.is_dragging = False
             self.drag_last_pos = QPoint()
+            self.set_merge_staging_mode(False)
             self.set_split_staging_mode(False)
             self.clear_preannotation_box()
 
@@ -762,23 +1176,9 @@ class ImageLabel(QLabel):
         local_end = (int(round(line_end[0] - min_x)), int(round(line_end[1] - min_y)))
         cv2.line(mask, local_start, local_end, 0, thickness=max(5, int(gap)))
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        split_polygons = []
-        for contour in contours:
-            if cv2.contourArea(contour) < 20:
-                continue
-            epsilon = max(1.0, 0.003 * cv2.arcLength(contour, True))
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            points = [(float(point[0][0] + min_x), float(point[0][1] + min_y)) for point in approx]
-            normalized = normalize_polygons([points])
-            if normalized:
-                split_polygons.append(normalized[0])
-
-        split_polygons.sort(key=lambda item: abs(calculate_polygon_area(item)), reverse=True)
+        split_polygons = self._extract_split_polygons_from_mask(mask, min_x, min_y, polygon)
         if len(split_polygons) < 2:
             return False, "切割后没有得到两个有效区域"
-        if len(split_polygons) > 2:
-            split_polygons = split_polygons[:2]
 
         polygon_index = staging["polygon_index"]
         label = staging.get("label", "stem")
@@ -2035,13 +2435,22 @@ class ImageLabel(QLabel):
                     self.update_display()
                 return
 
-            if self.split_staging_mode:
+            if self._is_fine_tune_interaction_active() and self.split_staging_mode:
                 selected_kind, _ = self.get_selected_entity()
                 if selected_kind == "staging" and image_pos:
                     self.split_line_dragging = True
                     self.split_line_start = image_pos
                     self.split_line_end = image_pos
                     self.update_display()
+                return
+
+            if self._is_fine_tune_interaction_active() and self.merge_staging_mode and image_pos:
+                success, message = self._handle_merge_staging_click(image_pos)
+                if message:
+                    main_win = self.get_main_window()
+                    if main_win and hasattr(main_win, "sam_info_text"):
+                        prefix = "暂存区域合并完成" if success else "暂存区域合并提示"
+                        main_win.sam_info_text.append(f"{prefix}: {message}")
                 return
 
             # 检查图片状态是否为已完成
@@ -2082,14 +2491,14 @@ class ImageLabel(QLabel):
                 return
 
             # ??????????????????????????????????
-            if self.candidate_instances and not (self.mode == "fine_tune" and self.fine_tune_instance_id):
+            if self.candidate_instances and not self._is_fine_tune_interaction_active():
                 hit_kind, hit_id = self._find_hit_entity(image_pos)
                 if hit_kind == "candidate":
                     self.select_entity(hit_kind, hit_id)
                 return
 
             # 优先处理微调模式
-            if self.mode == "fine_tune" and self.fine_tune_instance_id:
+            if self._is_fine_tune_interaction_active():
                 if self.removing_region:
                     self.main_stack.append({
                         'action': 'add_removal_point',
@@ -2216,7 +2625,7 @@ class ImageLabel(QLabel):
                 return
 
             # 只有在非微调模式下才处理current_points和current_plant_polygons
-            if not (self.mode == "fine_tune" and self.fine_tune_instance_id) and (self.current_points or self.current_plant_polygons):
+            if not self._is_fine_tune_interaction_active() and (self.current_points or self.current_plant_polygons):
                 self._append_current_point(image_pos)
                 self._notify_annotation_changed()
                 return
@@ -2225,14 +2634,6 @@ class ImageLabel(QLabel):
                 self.perform_region_growing(image_pos)
                 self._notify_annotation_changed()
                 return
-
-            else:
-                # 其他模式：正常处理
-                vertex_hit = self._find_vertex_hit(image_pos)
-                if vertex_hit:
-                    self.vertex_drag_info = vertex_hit
-                    self.select_entity(vertex_hit["kind"], vertex_hit["entity_id"])
-                    return
 
             hit_kind, hit_id = self._find_hit_entity(image_pos)
             if hit_kind:
@@ -2263,6 +2664,9 @@ class ImageLabel(QLabel):
                 self.clear_preannotation_box()
             return
         if event.button() == Qt.LeftButton and self.split_line_dragging:
+            if not self._is_fine_tune_interaction_active():
+                self.set_split_staging_mode(False)
+                return
             self.split_line_dragging = False
             image_pos = self.screen_to_image(event.pos())
             if image_pos:
@@ -2277,6 +2681,9 @@ class ImageLabel(QLabel):
                 self.set_split_staging_mode(False)
             return
         if event.button() == Qt.LeftButton and self.vertex_drag_info:
+            if not self._is_fine_tune_interaction_active():
+                self.vertex_drag_info = None
+                return
             # 记录顶点拖拽操作到撤销栈
             if self.mode == "fine_tune":
                 # 记录拖拽操作
@@ -2402,6 +2809,9 @@ class ImageLabel(QLabel):
             return
 
         if self.vertex_drag_info:
+            if not self._is_fine_tune_interaction_active():
+                self.vertex_drag_info = None
+                return
             image_pos = self.screen_to_image(event.pos())
             if image_pos:
                 self._update_dragging_vertex(image_pos)
@@ -2415,6 +2825,9 @@ class ImageLabel(QLabel):
             return
 
         if self.split_line_dragging:
+            if not self._is_fine_tune_interaction_active():
+                self.set_split_staging_mode(False)
+                return
             image_pos = self.screen_to_image(event.pos())
             if image_pos:
                 self.split_line_end = image_pos
@@ -2476,8 +2889,57 @@ class ImageLabel(QLabel):
         self.current_snap_point = None
         self.update_display()
 
-    def _find_vertex_hit(self, image_pos, instance_id=None):
+    def _iter_vertex_hit_candidates(self, instance_id=None, entity_candidates=None):
+        if entity_candidates is not None:
+            for candidate in entity_candidates:
+                if candidate:
+                    yield candidate.get("kind", "staging"), candidate
+            return
+
+        if instance_id:
+            for plant in self.plants:
+                if int(plant.get("id", 0)) == int(instance_id):
+                    yield "formal", plant
+                    return
+            return
+
+        entity_kind, entity = self.get_selected_entity()
+        if entity:
+            yield entity_kind, entity
+
+    def _find_vertex_hit(self, image_pos, instance_id=None, entity_candidates=None):
         """查找当前选中对象是否有顶点命中（修复版：过滤闭合冗余点）。"""
+        if entity_candidates is not None:
+            hit_radius = self.vertex_hit_radius / max(self.scale_factor, 0.1)
+            for entity_kind, entity in self._iter_vertex_hit_candidates(
+                instance_id=instance_id,
+                entity_candidates=entity_candidates,
+            ):
+                polygons = entity.get("polygons", [])
+                for polygon_index, polygon in enumerate(polygons):
+                    point_count = len(polygon)
+                    if point_count < 3:
+                        continue
+                    is_closed = polygon[0] == polygon[-1]
+                    valid_point_count = point_count - 1 if is_closed else point_count
+                    for point_index in range(valid_point_count):
+                        point = polygon[point_index]
+                        distance = math.dist(
+                            (float(point[0]), float(point[1])),
+                            (float(image_pos[0]), float(image_pos[1])),
+                        )
+                        if distance <= hit_radius:
+                            entity_id = entity.get("id")
+                            if entity_kind == "candidate":
+                                entity_id = entity.get("candidate_id")
+                            return {
+                                "kind": entity_kind,
+                                "entity_id": entity_id,
+                                "polygon_index": polygon_index,
+                                "point_index": point_index,
+                            }
+            return None
+
         if instance_id:
             # 微调模式：查找指定实例
             for plant in self.plants:
@@ -2768,6 +3230,9 @@ class ImageLabel(QLabel):
         """实时更新拖拽顶点（修复版：拖拽首点自动同步尾点）。"""
         drag = self.vertex_drag_info
         if not drag:
+            return
+        if not self._is_fine_tune_interaction_active():
+            self.vertex_drag_info = None
             return
         # 获取目标实体
         if self.mode == "fine_tune" and self.fine_tune_instance_id:
@@ -3301,6 +3766,44 @@ class ImageLabel(QLabel):
                 painter.setPen(QPen(QColor(255, 140, 0), 3, Qt.DashLine))
                 painter.drawLine(img_to_screen(self.split_line_start), img_to_screen(self.split_line_end))
 
+            if self.merge_staging_clicks:
+                painter.setPen(QPen(QColor(0, 180, 140), 2))
+                painter.setBrush(QBrush(QColor(0, 180, 140)))
+                # 绘制所有点击点
+                for click in self.merge_staging_clicks:
+                    point = click.get("point")
+                    if not point:
+                        continue
+                    qpoint = img_to_screen(point)
+                    painter.drawEllipse(qpoint, 5, 5)
+                # 绘制连接线
+                if len(self.merge_staging_clicks) >= 2:
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(QColor(0, 180, 140), 2, Qt.DashLine))
+                    # 连接第一个区域的两个点
+                    if len(self.merge_staging_clicks) >= 2:
+                        painter.drawLine(
+                            img_to_screen(self.merge_staging_clicks[0]["point"]),
+                            img_to_screen(self.merge_staging_clicks[1]["point"]),
+                        )
+                    # 连接第二个区域的两个点
+                    if len(self.merge_staging_clicks) >= 4:
+                        painter.drawLine(
+                            img_to_screen(self.merge_staging_clicks[2]["point"]),
+                            img_to_screen(self.merge_staging_clicks[3]["point"]),
+                        )
+                    # 连接两个区域的对应点
+                    if len(self.merge_staging_clicks) >= 3:
+                        painter.drawLine(
+                            img_to_screen(self.merge_staging_clicks[0]["point"]),
+                            img_to_screen(self.merge_staging_clicks[2]["point"]),
+                        )
+                    if len(self.merge_staging_clicks) >= 4:
+                        painter.drawLine(
+                            img_to_screen(self.merge_staging_clicks[1]["point"]),
+                            img_to_screen(self.merge_staging_clicks[3]["point"]),
+                        )
+
             painter.end()
             self.setPixmap(final_pixmap)
         except Exception as error:
@@ -3351,10 +3854,8 @@ class ImageLabel(QLabel):
                 # 将临时pixmap绘制到主画布
                 painter.drawPixmap(0, 0, temp_pixmap)
 
-            if not summary_mode and (is_selected or is_fine_tune):
-                # 微调模式或选中状态下绘制顶点
-                vertex_color = QColor(255, 0, 0) if is_fine_tune else QColor(255, 60, 60)
-                self._draw_polygon_vertices(painter, img_to_screen, plant.get("polygons", []), vertex_color)
+            if not summary_mode and is_fine_tune:
+                self._draw_polygon_vertices(painter, img_to_screen, plant.get("polygons", []), QColor(255, 0, 0))
             
             # 绘制暂存区域
             if not summary_mode:
@@ -3362,23 +3863,25 @@ class ImageLabel(QLabel):
                 for area in staging_areas:
                     area_id = area.get("id")
                     is_staging_selected = self.selected_entity_kind == "staging" and self.selected_entity_id == str(area_id)
+                    show_staging_highlight = is_staging_selected and is_fine_tune
                     polygon = area.get("polygon", [])
                     if len(polygon) >= 3:
                         qpts = [img_to_screen(point) for point in polygon]
-                        fill_color = QColor(0, 180, 255, 35 if not is_staging_selected else 70)
-                        line_color = QColor(0, 150, 255) if not is_staging_selected else QColor(255, 165, 0)
+                        fill_color = QColor(0, 180, 255, 35 if not show_staging_highlight else 70)
+                        line_color = QColor(0, 150, 255) if not show_staging_highlight else QColor(255, 165, 0)
                         painter.setBrush(QBrush(fill_color))
                         painter.setPen(QPen(line_color, 2, Qt.DashLine))
                         painter.drawPolygon(*qpts)
-                        if is_staging_selected:
+                        if show_staging_highlight:
                             self._draw_polygon_vertices(painter, img_to_screen, [polygon], QColor(0, 150, 255))
                 for area in self._iter_formal_removal_areas(plant):
                     area_id = area.get("id")
                     is_removal_selected = self.selected_entity_kind == "removal" and self.selected_entity_id == str(area_id)
+                    show_removal_highlight = is_removal_selected and is_fine_tune
                     polygon = area.get("polygon", [])
                     if len(polygon) >= 3:
                         qpts = [img_to_screen(point) for point in polygon]
-                        if is_removal_selected:
+                        if show_removal_highlight:
                             painter.setBrush(QBrush(QColor(255, 80, 80, 65)))
                             painter.setPen(QPen(QColor(255, 60, 60), 2, Qt.DashLine))
                             painter.drawPolygon(*qpts)
@@ -3447,7 +3950,8 @@ class ImageLabel(QLabel):
                             self.selected_entity_kind == "staging"
                             and self.selected_entity_id == self._make_staging_entity_id("preview", None, i)
                         )
-                        if is_preview_staging_selected:
+                        show_preview_staging_highlight = is_preview_staging_selected and self._is_fine_tune_interaction_active()
+                        if show_preview_staging_highlight:
                             temp_painter.setBrush(QBrush(QColor(255, 196, 0, 140)))
                             temp_painter.setPen(QPen(QColor(255, 140, 0), 2, Qt.DashLine))
                         else:
@@ -3466,7 +3970,7 @@ class ImageLabel(QLabel):
                             # 绘制文字
                             temp_painter.setPen(QPen(QColor(0, 0, 0), 1))
                             temp_painter.drawText(label_point, label)
-                        if is_preview_staging_selected:
+                        if show_preview_staging_highlight:
                             self._draw_polygon_vertices(temp_painter, img_to_screen, [polygon], QColor(255, 140, 0))
             
             # 绘制去除区域（挖空效果）
@@ -3483,11 +3987,12 @@ class ImageLabel(QLabel):
                             self.selected_entity_kind == "removal"
                             and self.selected_entity_id == self._make_removal_entity_id("preview", None, index)
                         ):
-                            temp_painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-                            temp_painter.setBrush(QBrush(QColor(255, 80, 80, 65)))
-                            temp_painter.setPen(QPen(QColor(255, 60, 60), 2, Qt.DashLine))
-                            temp_painter.drawPolygon(*qpts)
-                            self._draw_polygon_vertices(temp_painter, img_to_screen, [region], QColor(255, 60, 60))
+                            if self._is_fine_tune_interaction_active():
+                                temp_painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+                                temp_painter.setBrush(QBrush(QColor(255, 80, 80, 65)))
+                                temp_painter.setPen(QPen(QColor(255, 60, 60), 2, Qt.DashLine))
+                                temp_painter.drawPolygon(*qpts)
+                                self._draw_polygon_vertices(temp_painter, img_to_screen, [region], QColor(255, 60, 60))
             
             temp_painter.end()
             # 将临时pixmap绘制到主画布
@@ -3851,6 +4356,7 @@ class ImageLabel(QLabel):
                     {"polygon_index": staging["polygon_index"], "actual_polygon_index": actual_polygon_index},
                 )
 
+            self.set_merge_staging_mode(False)
             self.set_split_staging_mode(False)
             self._notify_annotation_changed()
             self.update_display()
@@ -3916,6 +4422,7 @@ class ImageLabel(QLabel):
                 {"polygon_index": polygon_index, "actual_polygon_index": actual_polygon_index},
             )
 
+        self.set_merge_staging_mode(False)
         self.set_split_staging_mode(False)
         self._notify_annotation_changed()
         self.update_display()
@@ -3954,23 +4461,9 @@ class ImageLabel(QLabel):
         local_end = (int(round(line_end[0] - min_x)), int(round(line_end[1] - min_y)))
         cv2.line(mask, local_start, local_end, 0, thickness=max(5, int(gap)))
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        split_polygons = []
-        for contour in contours:
-            if cv2.contourArea(contour) < 20:
-                continue
-            epsilon = max(1.0, 0.003 * cv2.arcLength(contour, True))
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            points = [(float(point[0][0] + min_x), float(point[0][1] + min_y)) for point in approx]
-            normalized = normalize_polygons([points])
-            if normalized:
-                split_polygons.append(normalized[0])
-
-        split_polygons.sort(key=lambda item: abs(calculate_polygon_area(item)), reverse=True)
+        split_polygons = self._extract_split_polygons_from_mask(mask, min_x, min_y, polygon)
         if len(split_polygons) < 2:
             return False, "切割后没有得到两个有效区域"
-        if len(split_polygons) > 2:
-            split_polygons = split_polygons[:2]
 
         polygon_index = staging["polygon_index"]
         label = staging.get("label", "stem")
@@ -4023,6 +4516,7 @@ class ImageLabel(QLabel):
             )
             self.select_entity("staging", self._make_staging_entity_id("formal", plant.get("id"), polygon_index))
 
+        self.set_merge_staging_mode(False)
         self.set_split_staging_mode(False)
         self._notify_annotation_changed()
         self.update_display()

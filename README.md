@@ -291,14 +291,14 @@ maize_preseg_tool/
 
 当前版本将预标注修正记录按图片拆分存储，文件名规则为：
 
-- `image_序号_correction.json`
+- `correction_<图片文件名>.json`
 
-这里的“序号”不是临时当前索引，而是图片在本次批量加载后由 `image_sequence_map` 分配的固定序号。
+默认直接使用图片文件名生成 correction 文件名；如果批量里存在同名图片，会自动追加序号后缀避免冲突。
 
 例如：
 
-- 第一张图：`image_1_correction.json`
-- 第二张图：`image_2_correction.json`
+- `IMG_001.jpg` -> `correction_IMG_001.jpg.json`
+- `IMG_002.jpg` -> `correction_IMG_002.jpg.json`
 
 记录文件由 [app/main_window_sam.py](/E:/PycharmProjects/maize_preseg_tool/app/main_window_sam.py) 管理，单条记录通常包含：
 
@@ -468,7 +468,7 @@ python main.py
 - 人工实例分割标注
 - 正式实例微调
 - SAM 框选预标注
-- 按图片固定序号管理 correction 文件
+- 按图片文件名管理 correction 文件
 - 轻量交互状态机
 - 批量导入 / 导出 COCO
 - 批量导出已完成图片的 correction
@@ -477,7 +477,7 @@ python main.py
 
 - 右侧属性面板当前是简化版
 - 状态机尚未完全取代旧布尔状态
-- correction 记录的自动落盘链路还不完整
+- correction 记录目前只保留手动导出，不做实时落盘
 - 复杂模式切换仍然依赖多处同步
 
 ## 建议阅读顺序

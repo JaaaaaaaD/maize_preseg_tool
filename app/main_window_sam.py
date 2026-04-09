@@ -1,12 +1,22 @@
-import copy
-import json
+﻿import copy
 import os
 from pathlib import Path
-import shutil
 
 from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from utils.annotation_schema import compute_annotation_hash, current_timestamp, make_formal_instance
+from utils.helpers import calculate_polygon_area
+from utils.preannotation_records import (
+    SEMANTIC_ACTION_AUTO,
+    append_event,
+    load_records_from_file,
+    next_record_counter,
+    normalize_record,
+    save_records_to_file,
+    set_active_reason,
+    set_semantic_action,
+    set_status,
+)
 from utils.project_context import (
     ensure_project_for_images,
     mark_training_failed,
@@ -18,11 +28,16 @@ from .workers import SamTrainingWorker
 
 
 class MainWindowSamMixin:
-    def _prompt_load_sam_model(self, prompt_message="请先加载SAM模型"):
-        """显式提示用户选择模型，不做自动导入或自动恢复。"""
+    @staticmethod
+    def _sanitize_correction_image_name(image_path):
+        image_name = Path(image_path or "").name or "unnamed"
+        invalid_chars = '<>:"/\\|?*'
+        safe_name = "".join("_" if char in invalid_chars else char for char in image_name).strip()
+        return safe_name or "unnamed"
+    def _prompt_load_sam_model(self, prompt_message="请先加载 SAM 模型"):
         reply = QMessageBox.question(
             self,
-            "加载SAM模型",
+            "加载 SAM 模型",
             f"{prompt_message}\n\n是否现在选择并加载模型？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -30,64 +45,33 @@ class MainWindowSamMixin:
         if reply != QMessageBox.Yes:
             return False
 
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择SAM模型文件", "", "模型文件 (*.pth)"
-        )
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择 SAM 模型文件", "", "模型文件 (*.pth)")
         if not file_path:
-            self.sam_info_text.append("已取消选择SAM模型文件")
+            self.sam_info_text.append("已取消选择 SAM 模型文件")
             return False
 
         model_type, ok = QInputDialog.getItem(
             self,
             "选择模型类型",
-            "请选择SAM模型类型:",
+            "请选择 SAM 模型类型:",
             ["vit_b", "vit_l", "vit_h"],
             0,
             False,
         )
         if not ok:
-            self.sam_info_text.append("已取消选择SAM模型类型")
+            self.sam_info_text.append("已取消选择 SAM 模型类型")
             return False
 
         self.sam_manager.load_model(file_path, model_type=model_type)
-        self.sam_info_text.append(f"SAM模型加载成功 (类型: {model_type})")
+        self.sam_info_text.append(f"SAM 模型加载成功 (类型: {model_type})")
         return True
 
     def debug_print_coco_container(self):
-        """调试函数：打印COCO容器内的信息"""
         from utils.data_manager import debug_print_coco_container
 
         debug_print_coco_container(self.coco_container)
 
-    def load_sam_model(self):
-        """加载SAM模型"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择SAM模型文件", "", "模型文件 (*.pth)"
-        )
-        if not file_path:
-            return
-
-        model_type, ok = QInputDialog.getItem(
-            self,
-            "选择模型类型",
-            "请选择SAM模型类型:",
-            ["vit_b", "vit_l", "vit_h"],
-            0,
-            False,
-        )
-        if not ok:
-            return
-
-        try:
-            self.sam_manager.load_model(file_path, model_type=model_type)
-            self.sam_info_text.append(f"SAM模型加载成功 (类型: {model_type})")
-            QMessageBox.information(self, "成功", f"SAM模型加载成功 (类型: {model_type})")
-        except Exception as error:
-            self.sam_info_text.append(f"加载失败: {str(error)}")
-            QMessageBox.warning(self, "失败", f"加载SAM模型失败: {str(error)}")
-
     def _cleanup_sam_training_worker(self):
-        """释放训练线程引用。"""
         if self.sam_training_worker:
             self.sam_training_worker.deleteLater()
             self.sam_training_worker = None
@@ -104,7 +88,21 @@ class MainWindowSamMixin:
                 return record
         return None
 
-    def _get_current_image_correction_path(self, image_path=None):
+    def _get_correction_filename(self, image_path=None):
+        target_image = image_path or self.current_image_path
+        if not target_image:
+            return None
+
+        safe_name = self._sanitize_correction_image_name(target_image)
+        if self.image_paths:
+            target_name = Path(target_image).name
+            duplicate_count = sum(1 for path in self.image_paths if Path(path).name == target_name)
+            if duplicate_count > 1:
+                index = self._resolve_image_sequence(target_image) or 1
+                safe_name = f"{safe_name}_{index}"
+        return f"correction_{safe_name}.json"
+
+    def _get_legacy_correction_path(self, image_path=None):
         target_image = image_path or self.current_image_path
         if not target_image:
             return None
@@ -113,38 +111,355 @@ class MainWindowSamMixin:
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, f"image_{index}_correction.json")
 
+    def _get_current_image_correction_path(self, image_path=None):
+        target_image = image_path or self.current_image_path
+        if not target_image:
+            return None
+        directory = self.save_path or os.getcwd()
+        os.makedirs(directory, exist_ok=True)
+        filename = self._get_correction_filename(target_image)
+        if not filename:
+            return None
+        return os.path.join(directory, filename)
+
+    def _get_existing_correction_path(self, image_path=None):
+        current_path = self._get_current_image_correction_path(image_path)
+        if current_path and os.path.exists(current_path):
+            return current_path
+
+        legacy_path = self._get_legacy_correction_path(image_path)
+        if legacy_path and os.path.exists(legacy_path):
+            return legacy_path
+        return current_path
+
+    def _get_cached_preannotation_records(self, image_path=None):
+        target_image = image_path or self.current_image_path
+        if not target_image:
+            return []
+        return copy.deepcopy((self.preannotation_records_by_image or {}).get(target_image, []))
+
     def _load_preannotation_adjustment_records(self, image_path=None):
         target_image = image_path or self.current_image_path
         if not target_image:
             self.preannotation_adjustment_records = []
+            self.preannotation_record_counter = 1
+            self._sync_preannotation_judgement_ui()
             return []
 
-        correction_path = self._get_current_image_correction_path(target_image)
-        if not correction_path or not os.path.exists(correction_path):
-            self.preannotation_adjustment_records = []
-            return []
+        if target_image in self.preannotation_records_by_image:
+            self.preannotation_adjustment_records = self._get_cached_preannotation_records(target_image)
+        else:
+            correction_path = self._get_existing_correction_path(target_image)
+            if correction_path and os.path.exists(correction_path):
+                self.preannotation_adjustment_records = load_records_from_file(correction_path, image_path=target_image)
+                self.preannotation_records_by_image[target_image] = copy.deepcopy(self.preannotation_adjustment_records)
+            else:
+                self.preannotation_adjustment_records = []
 
-        try:
-            with open(correction_path, "r", encoding="utf-8") as file:
-                payload = json.load(file)
-        except Exception:
-            self.preannotation_adjustment_records = []
-            return []
-
-        records = payload.get("records", []) if isinstance(payload, dict) else []
-        self.preannotation_adjustment_records = records if isinstance(records, list) else []
+        self.preannotation_record_counter = next_record_counter(self.preannotation_adjustment_records, default_value=1)
+        self._sync_preannotation_judgement_ui()
         return self.preannotation_adjustment_records
 
     def _save_preannotation_adjustment_records(self, image_path=None):
-        # 移除自动保存功能，只保留手动导出
+        target_image = image_path or self.current_image_path
+        if not target_image:
+            return None
+        self.preannotation_records_by_image[target_image] = copy.deepcopy(self.preannotation_adjustment_records)
         return None
+
+    def _persist_preannotation_adjustment_records(self):
+        if self.current_image_path:
+            self._save_preannotation_adjustment_records(self.current_image_path)
+
     def _next_preannotation_record_id(self):
         record_id = f"pre_{self.preannotation_record_counter:04d}"
         self.preannotation_record_counter += 1
         return record_id
 
+    def _get_current_preannotation_reason_code(self):
+        if hasattr(self, "combo_preannotation_reason"):
+            return self.combo_preannotation_reason.currentData() or None
+        return self.preannotation_default_reason_code
+
+    def _get_current_preannotation_semantic_action(self):
+        if hasattr(self, "combo_preannotation_semantic_action"):
+            return self.combo_preannotation_semantic_action.currentData() or SEMANTIC_ACTION_AUTO
+        return self.preannotation_default_semantic_action or SEMANTIC_ACTION_AUTO
+
+    @staticmethod
+    def _set_combobox_data(combo_box, value, default_index=0):
+        if combo_box is None:
+            return
+        target_value = value
+        if target_value is None:
+            target_value = combo_box.itemData(default_index)
+        for index in range(combo_box.count()):
+            if combo_box.itemData(index) == target_value:
+                combo_box.setCurrentIndex(index)
+                return
+        combo_box.setCurrentIndex(default_index)
+
+    def _get_selected_preannotation_formal_plant(self):
+        if self.left_label.mode == "fine_tune" and self.left_label.fine_tune_instance_id:
+            plant = self._find_plant_by_id(self.left_label.fine_tune_instance_id)
+            if plant and plant.get("preannotation_record_id"):
+                return plant
+
+        selected_kind, selected_entity = self.left_label.get_selected_entity()
+        if selected_kind == "formal" and selected_entity and selected_entity.get("preannotation_record_id"):
+            return selected_entity
+
+        if hasattr(self, "combo_plants") and self.combo_plants.currentIndex() >= 0:
+            plant = self._find_plant_by_id(self.combo_plants.currentData())
+            if plant and plant.get("preannotation_record_id"):
+                return plant
+        return None
+
+    def _get_active_preannotation_context(self):
+        candidate = self._get_selected_candidate()
+        if candidate:
+            return {"kind": "candidate", "candidate": candidate, "plant": None, "record": None}
+
+        plant = self._get_selected_preannotation_formal_plant()
+        if not plant:
+            return {"kind": None, "candidate": None, "plant": None, "record": None}
+
+        record = self._find_preannotation_record(plant.get("preannotation_record_id"))
+        return {"kind": "formal", "candidate": None, "plant": plant, "record": record}
+
+    def _get_active_preannotation_record(self):
+        return self._get_active_preannotation_context().get("record")
+
+    def _sync_preannotation_judgement_ui(self):
+        if getattr(self, "_updating_preannotation_controls", False):
+            return
+        self._updating_preannotation_controls = True
+        try:
+            record = self._get_active_preannotation_record()
+            reason_code = self.preannotation_default_reason_code
+            semantic_action = self.preannotation_default_semantic_action or SEMANTIC_ACTION_AUTO
+            if record:
+                reason_code = record.get("active_reason_code")
+                if record.get("semantic_action_source") == "manual":
+                    semantic_action = record.get("semantic_action") or SEMANTIC_ACTION_AUTO
+                else:
+                    semantic_action = SEMANTIC_ACTION_AUTO
+            if hasattr(self, "combo_preannotation_reason"):
+                self._set_combobox_data(self.combo_preannotation_reason, reason_code, default_index=0)
+            if hasattr(self, "combo_preannotation_semantic_action"):
+                self._set_combobox_data(self.combo_preannotation_semantic_action, semantic_action, default_index=0)
+        finally:
+            self._updating_preannotation_controls = False
+
+    def on_preannotation_reason_changed(self, _index):
+        if getattr(self, "_updating_preannotation_controls", False):
+            return
+        reason_code = self._get_current_preannotation_reason_code()
+        self.preannotation_default_reason_code = reason_code
+        record = self._get_active_preannotation_record()
+        if not record:
+            return
+        previous_reason = record.get("active_reason_code")
+        set_active_reason(record, reason_code)
+        if previous_reason != record.get("active_reason_code"):
+            append_event(
+                record,
+                "reason_selected",
+                {"reason_code": record.get("active_reason_code")},
+                reason_code=record.get("active_reason_code"),
+            )
+            self._persist_preannotation_adjustment_records()
+
+    def on_preannotation_semantic_action_changed(self, _index):
+        if getattr(self, "_updating_preannotation_controls", False):
+            return
+        semantic_action = self._get_current_preannotation_semantic_action()
+        self.preannotation_default_semantic_action = semantic_action
+        record = self._get_active_preannotation_record()
+        if not record:
+            return
+        previous_action = record.get("semantic_action")
+        previous_source = record.get("semantic_action_source")
+        if semantic_action == SEMANTIC_ACTION_AUTO:
+            set_semantic_action(record, None, source="auto")
+        else:
+            set_semantic_action(record, semantic_action, source="manual")
+        if (
+            previous_action != record.get("semantic_action")
+            or previous_source != record.get("semantic_action_source")
+        ):
+            append_event(
+                record,
+                "semantic_action_selected",
+                {"semantic_action": semantic_action},
+                reason_code=record.get("active_reason_code"),
+                semantic_action=None if semantic_action == SEMANTIC_ACTION_AUTO else semantic_action,
+            )
+            self._persist_preannotation_adjustment_records()
+
+    @staticmethod
+    def _extract_outer_polygons(polygons):
+        outer_polygons = []
+        for polygon in polygons or []:
+            if calculate_polygon_area(polygon) < 0:
+                outer_polygons.append(copy.deepcopy(polygon))
+        if outer_polygons:
+            return outer_polygons
+        return copy.deepcopy(polygons or [])
+
+    def _append_preannotation_event(self, record, event_type, details=None, semantic_action=None):
+        append_event(
+            record,
+            event_type,
+            details=details,
+            reason_code=record.get("active_reason_code"),
+            semantic_action=semantic_action,
+        )
+
+    def _finalize_preannotation_record(self, record):
+        if record.get("semantic_action_source") != "manual":
+            set_semantic_action(record, None, source="auto")
+        semantic_action = record.get("semantic_action")
+        if semantic_action == "ignore":
+            set_status(record, "ignored")
+        elif semantic_action == "reject":
+            set_status(record, "rejected")
+        elif semantic_action == "merge":
+            set_status(record, "merged")
+        elif record.get("event_log"):
+            set_status(record, "modified")
+        else:
+            set_status(record, "accepted")
+
+    def _build_preannotation_record(self, candidate, formal_instance_id=None, status="accepted"):
+        semantic_action = self.preannotation_default_semantic_action or SEMANTIC_ACTION_AUTO
+        if status == "accepted" and semantic_action in ("ignore", "reject"):
+            semantic_action = SEMANTIC_ACTION_AUTO
+        record = normalize_record(
+            {
+                "record_id": self._next_preannotation_record_id(),
+                "image_path": self.current_image_path,
+                "created_at": current_timestamp(),
+                "updated_at": current_timestamp(),
+                "model_path": self.sam_manager.model_path,
+                "model_type": self.sam_manager.model_type,
+                "roi_box": copy.deepcopy(candidate.get("roi_box", [])),
+                "candidate_id": candidate.get("candidate_id"),
+                "confidence": candidate.get("confidence"),
+                "original_polygons": copy.deepcopy(candidate.get("polygons", [])),
+                "final_polygons": copy.deepcopy(candidate.get("polygons", [])),
+                "formal_instance_id": formal_instance_id,
+                "status": status,
+                "event_log": [],
+            }
+        )
+        set_active_reason(record, self.preannotation_default_reason_code)
+        if semantic_action == SEMANTIC_ACTION_AUTO:
+            set_semantic_action(record, None, source="auto")
+        else:
+            set_semantic_action(record, semantic_action, source="manual")
+        return record
+
+    def _remove_preannotation_formal_instance(self, instance_id):
+        self.left_label.plants = [
+            plant for plant in self.left_label.plants if int(plant.get("id", 0)) != int(instance_id)
+        ]
+        if self.left_label.selected_plant_id == instance_id:
+            self.left_label.selected_plant_id = None
+        if self.left_label.selected_entity_kind == "formal" and int(self.left_label.selected_entity_id or 0) == int(instance_id):
+            self.left_label.selected_entity_kind = None
+            self.left_label.selected_entity_id = None
+        self.left_label.update_display()
+
+    def ignore_selected_preannotation(self):
+        context = self._get_active_preannotation_context()
+        if context.get("kind") == "candidate":
+            candidate = context.get("candidate")
+            record = self._build_preannotation_record(candidate, formal_instance_id=None, status="ignored")
+            set_semantic_action(record, "ignore", source="manual")
+            set_status(record, "ignored")
+            self._append_preannotation_event(
+                record,
+                "candidate_ignored",
+                {"candidate_id": candidate.get("candidate_id")},
+                semantic_action="ignore",
+            )
+            self.preannotation_adjustment_records.append(record)
+            self.left_label.ignored_regions.extend(self._extract_outer_polygons(candidate.get("polygons", [])))
+            self._clear_preannotation_candidate()
+            self.mark_annotation_changed()
+            self.sync_summary_view()
+            self.update_undo_redo_state()
+            self._persist_preannotation_adjustment_records()
+            self.sam_info_text.append(f"已忽略 proposal: {candidate.get('candidate_id')}")
+            return
+
+        if context.get("kind") != "formal":
+            QMessageBox.warning(self, "警告", "当前没有可忽略的 proposal")
+            return
+
+        plant = context.get("plant")
+        if not plant:
+            return
+        instance_id = int(plant.get("id", 0))
+        if self.left_label.mode == "fine_tune" and int(self.left_label.fine_tune_instance_id or 0) == instance_id:
+            exited = self.left_label.exit_fine_tune_mode(save_changes=True)
+            if not exited:
+                return
+            plant = self._find_plant_by_id(instance_id)
+        if not plant:
+            return
+        record = self._find_preannotation_record(plant.get("preannotation_record_id"))
+        if not record:
+            return
+        record["final_polygons"] = copy.deepcopy(plant.get("polygons", []))
+        set_semantic_action(record, "ignore", source="manual")
+        set_status(record, "ignored")
+        self._append_preannotation_event(
+            record,
+            "instance_ignored",
+            {"formal_instance_id": instance_id},
+            semantic_action="ignore",
+        )
+        self.left_label.ignored_regions.extend(self._extract_outer_polygons(plant.get("polygons", [])))
+        self._remove_preannotation_formal_instance(instance_id)
+        self.mark_annotation_changed()
+        self.sync_summary_view()
+        self.update_plant_list()
+        self.update_undo_redo_state()
+        self._persist_preannotation_adjustment_records()
+        self._update_preannotation_controls()
+        self.sam_info_text.append(f"已忽略 proposal instance={instance_id}")
+
+    def record_preannotation_instance_deleted(self, plant, semantic_action=None):
+        if not plant or not plant.get("preannotation_record_id"):
+            return False
+        record = self._find_preannotation_record(plant.get("preannotation_record_id"))
+        if not record:
+            return False
+
+        chosen_action = semantic_action or self._get_current_preannotation_semantic_action()
+        if chosen_action != "merge":
+            chosen_action = "reject"
+        record["formal_instance_id"] = int(plant.get("id", 0))
+        record["final_polygons"] = []
+        set_semantic_action(record, chosen_action, source="manual")
+        set_status(record, "merged" if chosen_action == "merge" else "rejected")
+        self._append_preannotation_event(
+            record,
+            "proposal_merged" if chosen_action == "merge" else "delete_instance",
+            {"formal_instance_id": int(plant.get("id", 0))},
+            semantic_action=chosen_action,
+        )
+        self._persist_preannotation_adjustment_records()
+        self._update_preannotation_controls()
+        return True
+
     def _update_preannotation_controls(self):
-        has_candidate = bool(self.left_label.candidate_instances)
+        context = self._get_active_preannotation_context()
+        has_candidate = context.get("kind") == "candidate"
+        has_active_record = bool(context.get("kind"))
+        has_image = bool(self.current_image_path)
         box_mode = bool(self.left_label.preannotation_box_mode)
         if hasattr(self, "sync_interaction_state"):
             self.sync_interaction_state()
@@ -154,6 +469,13 @@ class MainWindowSamMixin:
             self.btn_sam_select_mode.setEnabled(has_candidate)
         if hasattr(self, "btn_save_staging_areas"):
             self.btn_save_staging_areas.setEnabled(has_candidate)
+        if hasattr(self, "btn_ignore_preannotation"):
+            self.btn_ignore_preannotation.setEnabled(has_active_record)
+        if hasattr(self, "combo_preannotation_reason"):
+            self.combo_preannotation_reason.setEnabled(has_image)
+        if hasattr(self, "combo_preannotation_semantic_action"):
+            self.combo_preannotation_semantic_action.setEnabled(has_image)
+        self._sync_preannotation_judgement_ui()
 
     def _clear_preannotation_candidate(self, clear_box=True):
         self.current_preannotation_candidate = None
@@ -179,16 +501,15 @@ class MainWindowSamMixin:
         return None
 
     def on_canvas_entity_selected(self, entity_kind, entity_id):
-        if entity_kind == "candidate":
-            self._update_preannotation_controls()
+        self._update_preannotation_controls()
         if hasattr(self, "sync_label_combo_with_selection"):
             self.sync_label_combo_with_selection()
         if hasattr(self, "_update_staging_controls"):
             self._update_staging_controls()
         if hasattr(self, "refresh_properties_panel"):
             self.refresh_properties_panel()
+
     def on_preannotation_box_completed(self, rect):
-        """在框选 ROI 完成后执行预标注。"""
         self.left_label.set_preannotation_box_mode(False)
         self._update_preannotation_controls()
 
@@ -208,7 +529,7 @@ class MainWindowSamMixin:
 
             crop = image[y1:y2, x1:x2]
             if crop.size == 0:
-                raise RuntimeError("框选区域为空")
+                raise RuntimeError("Selected ROI is empty")
 
             predictor = self.sam_manager.get_predictor()
             predictor.set_image(crop)
@@ -222,7 +543,7 @@ class MainWindowSamMixin:
             )
 
             if masks is None or len(masks) == 0:
-                raise RuntimeError("模型未返回有效掩码")
+                raise RuntimeError("SAM did not return a valid mask")
 
             scored_masks = []
             for mask, score in zip(masks, scores):
@@ -231,7 +552,7 @@ class MainWindowSamMixin:
                     continue
                 scored_masks.append((float(score), area, mask))
             if not scored_masks:
-                raise RuntimeError("候选掩码面积过小")
+                raise RuntimeError("Candidate mask area is too small")
 
             scored_masks.sort(key=lambda item: (item[0], item[1]), reverse=True)
             best_score, _, best_mask = scored_masks[0]
@@ -240,7 +561,7 @@ class MainWindowSamMixin:
 
             polygons = process_sam_polygons(mask_to_polygons(best_mask.astype(np.uint8) * 255, pixel_interval=50))
             if not polygons:
-                raise RuntimeError("掩码无法转换为有效多边形")
+                raise RuntimeError("Failed to convert mask into a valid polygon")
 
             mapped_polygons = []
             for polygon in polygons:
@@ -273,13 +594,12 @@ class MainWindowSamMixin:
             QMessageBox.warning(self, "失败", f"预标注失败: {str(error)}")
 
     def run_sam_preannotation(self):
-        """切换框选预标注模式。"""
         if not self.current_image_path:
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
 
         if not self.sam_manager.has_model_loaded():
-            QMessageBox.warning(self, "警告", "请先加载SAM模型")
+            QMessageBox.warning(self, "警告", "请先加载 SAM 模型")
             return
         if self.left_label.preannotation_box_mode:
             self.left_label.set_preannotation_box_mode(False)
@@ -308,9 +628,7 @@ class MainWindowSamMixin:
             self.sync_interaction_state()
         self.sam_info_text.append("请在左侧画布拖拽一个虚线框进行预标注")
         self._update_preannotation_controls()
-
     def enter_sam_select_mode(self):
-        """接受当前预标注候选，进入微调模式"""
         candidate = self._get_selected_candidate()
         if not candidate:
             QMessageBox.warning(self, "警告", "请先选择一个预标注候选")
@@ -321,7 +639,6 @@ class MainWindowSamMixin:
 
         instance_id = self.left_label.current_plant_id
         self.left_label.current_plant_id += 1
-        record_id = self._next_preannotation_record_id()
 
         new_instance = make_formal_instance(
             instance_id=instance_id,
@@ -330,24 +647,11 @@ class MainWindowSamMixin:
             origin_model_version=self.sam_manager.model_type,
             origin_confidence=candidate.get("confidence"),
         )
-        new_instance["preannotation_record_id"] = record_id
+        record = self._build_preannotation_record(candidate, formal_instance_id=instance_id, status="accepted")
+        self._append_preannotation_event(record, "candidate_accepted", {"formal_instance_id": instance_id})
+        self._finalize_preannotation_record(record)
+        new_instance["preannotation_record_id"] = record["record_id"]
         self.left_label.plants.append(new_instance)
-
-        record = {
-            "record_id": record_id,
-            "image_path": self.current_image_path,
-            "created_at": current_timestamp(),
-            "model_path": self.sam_manager.model_path,
-            "model_type": self.sam_manager.model_type,
-            "roi_box": copy.deepcopy(candidate.get("roi_box", [])),
-            "candidate_id": candidate.get("candidate_id"),
-            "confidence": candidate.get("confidence"),
-            "original_polygons": copy.deepcopy(candidate.get("polygons", [])),
-            "final_polygons": copy.deepcopy(candidate.get("polygons", [])),
-            "formal_instance_id": instance_id,
-            "status": "accepted",
-            "operations": [],
-        }
         self.preannotation_adjustment_records.append(record)
 
         self._clear_preannotation_candidate()
@@ -366,22 +670,34 @@ class MainWindowSamMixin:
         self.sync_summary_view()
         self.update_plant_list()
         self.update_undo_redo_state()
+        self._persist_preannotation_adjustment_records()
         self.sam_info_text.append(f"已接受预标注: instance={instance_id}")
         self._update_preannotation_controls()
+
     def save_selected_staging_areas(self):
-        """拒绝当前候选，不写入正式实例。"""
         candidate = self._get_selected_candidate()
         if not candidate:
             QMessageBox.warning(self, "警告", "当前没有可拒绝的预标注候选")
             return
 
+        record = self._build_preannotation_record(candidate, formal_instance_id=None, status="rejected")
+        set_semantic_action(record, "reject", source="manual")
+        set_status(record, "rejected")
+        self._append_preannotation_event(
+            record,
+            "candidate_rejected",
+            {"candidate_id": candidate.get("candidate_id")},
+            semantic_action="reject",
+        )
+        self.preannotation_adjustment_records.append(record)
+
         candidate_id = candidate.get("candidate_id")
         self._clear_preannotation_candidate()
+        self._persist_preannotation_adjustment_records()
         self.sam_info_text.append(f"已拒绝候选: {candidate_id}")
         self._update_preannotation_controls()
 
     def on_fine_tune_session_started(self, instance_id):
-        """为预标注实例保存微调前快照，便于放弃修改时回滚记录。"""
         plant = self._find_plant_by_id(instance_id)
         if not plant:
             return
@@ -391,8 +707,13 @@ class MainWindowSamMixin:
             return
         self.preannotation_fine_tune_sessions[instance_id] = {
             "record_id": record_id,
-            "operations_len": len(record.get("operations", [])),
+            "event_log_len": len(record.get("event_log", [])),
             "final_polygons": copy.deepcopy(record.get("final_polygons", [])),
+            "status": record.get("status"),
+            "semantic_action": record.get("semantic_action"),
+            "semantic_action_source": record.get("semantic_action_source"),
+            "reason_codes": copy.deepcopy(record.get("reason_codes", [])),
+            "active_reason_code": record.get("active_reason_code"),
         }
 
     def on_fine_tune_session_finished(self, instance_id, saved):
@@ -406,13 +727,19 @@ class MainWindowSamMixin:
             plant = self._find_plant_by_id(instance_id)
             if plant:
                 record["final_polygons"] = copy.deepcopy(plant.get("polygons", []))
-            record["status"] = "modified" if record.get("operations") else "accepted"
+            self._finalize_preannotation_record(record)
         else:
-            record["operations"] = record.get("operations", [])[:session["operations_len"]]
+            record["event_log"] = record.get("event_log", [])[:session["event_log_len"]]
+            record["operations"] = copy.deepcopy(record["event_log"])
             record["final_polygons"] = copy.deepcopy(session["final_polygons"])
-            record["status"] = "accepted"
+            record["status"] = session.get("status")
+            record["semantic_action"] = session.get("semantic_action")
+            record["semantic_action_source"] = session.get("semantic_action_source")
+            record["reason_codes"] = copy.deepcopy(session.get("reason_codes", []))
+            record["active_reason_code"] = session.get("active_reason_code")
+        self._persist_preannotation_adjustment_records()
+
     def record_preannotation_adjustment_action(self, instance_id, action_type, details):
-        """记录预标注调整操作"""
         plant = self._find_plant_by_id(instance_id)
         if not plant:
             return
@@ -420,17 +747,11 @@ class MainWindowSamMixin:
         record = self._find_preannotation_record(record_id)
         if not record:
             return
-        record.setdefault("operations", []).append(
-            {
-                "timestamp": current_timestamp(),
-                "action": action_type,
-                "details": copy.deepcopy(details),
-            }
-        )
+        self._append_preannotation_event(record, action_type, copy.deepcopy(details))
         record["final_polygons"] = copy.deepcopy(plant.get("polygons", []))
-        record["status"] = "modified"
+        self._finalize_preannotation_record(record)
+
     def on_entity_geometry_modified(self):
-        """实体几何修改时调用"""
         if self.left_label.mode != "fine_tune":
             return
         instance_id = self.left_label.fine_tune_instance_id
@@ -441,52 +762,53 @@ class MainWindowSamMixin:
         record = self._find_preannotation_record(record_id)
         if record:
             record["final_polygons"] = copy.deepcopy(plant.get("polygons", []))
+            self._finalize_preannotation_record(record)
+
     def export_preannotation_adjustments(self):
-        """导出预标注调整记录"""
         directory = QFileDialog.getExistingDirectory(self, "选择导出目录", self.export_path or "")
         if not directory:
             return
 
         self.export_path = directory
+        self._persist_preannotation_adjustment_records()
         exported_count = 0
         skipped_count = 0
 
-        current_image_backup = self.current_image_path
-        current_records_backup = copy.deepcopy(self.preannotation_adjustment_records)
-
         for image_path in self.image_paths:
-            index = self._resolve_image_sequence(image_path) or 1
-            correction_path = self._get_current_image_correction_path(image_path)
-            if not correction_path or not os.path.exists(correction_path):
-                skipped_count += 1
-                continue
-
             annotation = self.coco_container.get(image_path)
             completed = False
             if annotation:
                 completed = bool(annotation.get("image_state", {}).get("annotation_completed", False))
-            if image_path == current_image_backup:
+            if image_path == self.current_image_path:
                 completed = bool((self.current_image_state or {}).get("annotation_completed", False))
             if not completed:
                 skipped_count += 1
                 continue
 
-            export_path = os.path.join(directory, f"image_{index}_correction.json")
-            shutil.copy2(correction_path, export_path)
+            records = self._get_cached_preannotation_records(image_path)
+            if not records:
+                correction_path = self._get_existing_correction_path(image_path)
+                if correction_path and os.path.exists(correction_path):
+                    records = load_records_from_file(correction_path, image_path=image_path)
+                else:
+                    skipped_count += 1
+                    continue
+
+            export_filename = self._get_correction_filename(image_path)
+            export_path = os.path.join(directory, export_filename)
+            save_records_to_file(export_path, image_path, records)
             exported_count += 1
 
-        self.preannotation_adjustment_records = current_records_backup
-        self.current_image_path = current_image_backup
         QMessageBox.information(self, "导出完成", f"成功导出 {exported_count} 个文件，跳过 {skipped_count} 个文件")
+
     def _ensure_sam_model_loaded_interactive(self, prompt_message):
-        """确保模型加载流程一致：不自动恢复，只在用户确认后显式选择。"""
         if self.sam_manager.has_model_loaded():
             return True
         try:
             return self._prompt_load_sam_model(prompt_message=prompt_message)
         except Exception as error:
-            self.sam_info_text.append(f"加载失败: {str(error)}")
-            QMessageBox.warning(self, "失败", f"加载SAM模型失败: {str(error)}")
+            self.sam_info_text.append(f"加载模型失败: {str(error)}")
+            QMessageBox.warning(self, "加载失败", f"加载 SAM 模型失败: {str(error)}")
             return False
 
     def _ensure_training_project_context(self):
@@ -573,7 +895,7 @@ class MainWindowSamMixin:
             validation_output_dir = run_info.get("validation_output_dir", "")
             run_dir = run_info.get("run_dir", "")
             if run_dir:
-                self.sam_info_text.append(f"训练产物目录: {run_dir}")
+                self.sam_info_text.append(f"训练输出目录: {run_dir}")
             if best_model_path:
                 self.sam_info_text.append(f"最佳模型: {best_model_path}")
             if validation_output_dir:
@@ -597,10 +919,10 @@ class MainWindowSamMixin:
         QMessageBox.warning(self, "训练失败", message)
 
     def load_sam_model(self):
-        """覆盖旧入口：仅显式加载，不做自动导入。"""
-        loaded = self._ensure_sam_model_loaded_interactive("请选择一个SAM模型文件")
+        loaded = self._ensure_sam_model_loaded_interactive("请选择一个 SAM 模型文件")
         if loaded:
-            QMessageBox.information(self, "成功", f"SAM模型加载成功 (类型: {self.sam_manager.model_type})")
+            QMessageBox.information(self, "成功", f"SAM 模型加载成功 (类型: {self.sam_manager.model_type})")
+
     def start_sam_training(self):
         if self.sam_training_worker and self.sam_training_worker.isRunning():
             QMessageBox.information(self, "提示", "SAM 训练正在进行中")
@@ -656,37 +978,3 @@ class MainWindowSamMixin:
         self.sam_training_worker.finished_signal.connect(self._handle_sam_training_finished)
         self.sam_training_worker.finished.connect(self._cleanup_sam_training_worker)
         self.sam_training_worker.start()
-
-    def run_sam_preannotation(self):
-        """覆盖旧流程：预标注前允许用户就地显式加载模型。"""
-        if not self.current_image_path:
-            QMessageBox.warning(self, "警告", "请先加载图片")
-            return
-
-        if not self._ensure_sam_model_loaded_interactive("预标注前需要先加载SAM模型"):
-            return
-
-        if self.left_label.preannotation_box_mode:
-            self.left_label.set_preannotation_box_mode(False)
-            self.left_label.clear_preannotation_box()
-            self.sam_info_text.append("已取消框选预标注")
-            self._update_preannotation_controls()
-            return
-
-        if self.left_label.candidate_instances:
-            reply = QMessageBox.question(
-                self,
-                "覆盖当前候选",
-                "当前还有未处理的预标注候选，是否丢弃并重新框选？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-            self._clear_preannotation_candidate()
-
-        self.left_label.set_preannotation_box_mode(True)
-        if hasattr(self, "sync_interaction_state"):
-            self.sync_interaction_state()
-        self.sam_info_text.append("请在左侧画布拖拽一个虚线框进行预标注")
-        self._update_preannotation_controls()

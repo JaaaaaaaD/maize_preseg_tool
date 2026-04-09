@@ -19,6 +19,10 @@ class MainWindowAnnotationMixin:
         has_removal = (not vertex_mode_active) and selected_kind == "removal"
         can_delete_area = has_staging or has_removal
         can_split_staging = in_fine_tune and has_staging
+        staging_count = 0
+        if in_fine_tune and hasattr(self.left_label, "_iter_active_fine_tune_staging_areas"):
+            staging_count = sum(1 for _ in self.left_label._iter_active_fine_tune_staging_areas())
+        can_merge_staging = in_fine_tune and (not vertex_mode_active) and staging_count >= 2
 
         if hasattr(self, "btn_apply_staging_label"):
             self.btn_apply_staging_label.setEnabled(has_staging)
@@ -29,6 +33,26 @@ class MainWindowAnnotationMixin:
             self.btn_split_staging_polygon.setText(
                 "退出切割暂存区域" if self.left_label.split_staging_mode else "切割选中暂存区域"
             )
+        if hasattr(self, "btn_merge_staging_polygon"):
+            self.btn_merge_staging_polygon.setEnabled(can_merge_staging)
+            self.btn_merge_staging_polygon.setText(
+                "退出合并暂存区域" if getattr(self.left_label, "merge_staging_mode", False) else "合并暂存区域"
+            )
+
+    def _can_activate_fine_tune_tool(self, tool_name):
+        if self.left_label.mode == "fine_tune":
+            return True
+        QMessageBox.warning(self, "警告", f"请先进入微调模式，再使用{tool_name}")
+        return False
+
+    def _stop_removal_region_drawing(self):
+        if not self.left_label.removing_region:
+            return
+        self.left_label.removing_region = False
+        self.left_label.current_removal_points = []
+        self.left_label.current_snap_point = None
+        if hasattr(self, "btn_removal_region"):
+            self.btn_removal_region.setText("去除区域 (R)")
 
     def sync_label_combo_with_selection(self):
         if not hasattr(self, "combo_label"):
@@ -175,6 +199,8 @@ class MainWindowAnnotationMixin:
         ):
             QMessageBox.warning(self, "警告", "请先接受或拒绝当前预标注候选，再进行微调")
             return
+        if not self.left_label.split_staging_mode:
+            self._stop_removal_region_drawing()
         if self.left_label.add_vertex_mode:
             self.left_label.exit_add_vertex_mode()
             if hasattr(self, "btn_add_vertex"):
@@ -183,7 +209,39 @@ class MainWindowAnnotationMixin:
             self.left_label.exit_delete_vertex_mode()
             if hasattr(self, "btn_delete_vertex"):
                 self.btn_delete_vertex.setText("删除顶点")
+        if getattr(self.left_label, "merge_staging_mode", False):
+            self.left_label.set_merge_staging_mode(False)
         self.left_label.set_split_staging_mode(not self.left_label.split_staging_mode)
+        if hasattr(self, "sync_interaction_state"):
+            self.sync_interaction_state()
+        self._update_staging_controls()
+        self.update_status_bar()
+
+    def toggle_merge_staging_polygon(self):
+        staging_count = 0
+        if hasattr(self.left_label, "_iter_active_fine_tune_staging_areas"):
+            staging_count = sum(1 for _ in self.left_label._iter_active_fine_tune_staging_areas())
+        if not getattr(self.left_label, "merge_staging_mode", False) and (
+            self.left_label.mode != "fine_tune" or staging_count < 2
+        ):
+            QMessageBox.warning(self, "警告", "请先进入微调模式，并确保当前至少有两个暂存区域")
+            return
+        if not getattr(self.left_label, "merge_staging_mode", False):
+            self._stop_removal_region_drawing()
+        if self.left_label.add_vertex_mode:
+            self.left_label.exit_add_vertex_mode()
+            if hasattr(self, "btn_add_vertex"):
+                self.btn_add_vertex.setText("添加顶点")
+        if getattr(self.left_label, "delete_vertex_mode", False):
+            self.left_label.exit_delete_vertex_mode()
+            if hasattr(self, "btn_delete_vertex"):
+                self.btn_delete_vertex.setText("删除顶点")
+        if self.left_label.split_staging_mode:
+            self.left_label.set_split_staging_mode(False)
+        new_state = not getattr(self.left_label, "merge_staging_mode", False)
+        self.left_label.set_merge_staging_mode(new_state)
+        if new_state and hasattr(self, "sam_info_text"):
+            self.sam_info_text.append("请分别点击两个暂存区域的两个顶点，系统会保留远离另一区域的边界并自动完成合并")
         if hasattr(self, "sync_interaction_state"):
             self.sync_interaction_state()
         self._update_staging_controls()
@@ -306,6 +364,10 @@ class MainWindowAnnotationMixin:
                 self.left_label.exit_delete_vertex_mode()
                 if hasattr(self, "btn_delete_vertex"):
                     self.btn_delete_vertex.setText("删除顶点")
+            if self.left_label.mode == "fine_tune" and self.left_label.split_staging_mode:
+                self.left_label.set_split_staging_mode(False)
+            if self.left_label.mode == "fine_tune" and getattr(self.left_label, "merge_staging_mode", False):
+                self.left_label.set_merge_staging_mode(False)
             self.btn_ignore_region.setText(f"忽略区域 ({SHORTCUTS['TOGGLE_IGNORE_REGION']})")
             self.ignoring_region = False
         else:
@@ -505,6 +567,8 @@ class MainWindowAnnotationMixin:
                 selected_kind, selected_entity = None, None
         if selected_kind == "formal" and selected_entity:
             self.push_undo_action("delete_instance", selected_entity)
+            if hasattr(self, "record_preannotation_instance_deleted"):
+                self.record_preannotation_instance_deleted(selected_entity)
             deleted = self.left_label.delete_plant(selected_entity.get("id"))
             if deleted:
                 self.mark_annotation_changed()
@@ -597,13 +661,20 @@ class MainWindowAnnotationMixin:
             self.left_label.exit_add_vertex_mode()
             self.btn_add_vertex.setText("添加顶点")
         else:
+            if not self._can_activate_fine_tune_tool("添加顶点"):
+                return
+            self._stop_removal_region_drawing()
             if getattr(self.left_label, "delete_vertex_mode", False):
                 self.left_label.exit_delete_vertex_mode()
                 if hasattr(self, "btn_delete_vertex"):
                     self.btn_delete_vertex.setText("删除顶点")
+            if self.left_label.split_staging_mode:
+                self.left_label.set_split_staging_mode(False)
+            if getattr(self.left_label, "merge_staging_mode", False):
+                self.left_label.set_merge_staging_mode(False)
             self.left_label.enter_add_vertex_mode()
-            self.left_label.set_split_staging_mode(False)
-            self.btn_add_vertex.setText("退出添加顶点")
+            if self.left_label.add_vertex_mode:
+                self.btn_add_vertex.setText("退出添加顶点")
         self._update_staging_controls()
         self.update_status_bar()
 
@@ -613,13 +684,20 @@ class MainWindowAnnotationMixin:
             self.left_label.exit_delete_vertex_mode()
             self.btn_delete_vertex.setText("删除顶点")
         else:
+            if not self._can_activate_fine_tune_tool("删除顶点"):
+                return
+            self._stop_removal_region_drawing()
             if self.left_label.add_vertex_mode:
                 self.left_label.exit_add_vertex_mode()
                 if hasattr(self, "btn_add_vertex"):
                     self.btn_add_vertex.setText("添加顶点")
+            if self.left_label.split_staging_mode:
+                self.left_label.set_split_staging_mode(False)
+            if getattr(self.left_label, "merge_staging_mode", False):
+                self.left_label.set_merge_staging_mode(False)
             self.left_label.enter_delete_vertex_mode()
-            self.left_label.set_split_staging_mode(False)
-            self.btn_delete_vertex.setText("退出删除顶点")
+            if getattr(self.left_label, "delete_vertex_mode", False):
+                self.btn_delete_vertex.setText("退出删除顶点")
         self._update_staging_controls()
         self.update_status_bar()
 
@@ -796,6 +874,8 @@ class MainWindowAnnotationMixin:
             status_parts.append("微调-删除顶点")
         elif state_name == "fine_tune_split_staging":
             status_parts.append("微调-切割暂存")
+        elif state_name == "fine_tune_merge_staging":
+            status_parts.append("微调-合并暂存")
         elif state_name == "fine_tune":
             status_parts.append("微调模式")
         elif state_name == "ignore_region":
