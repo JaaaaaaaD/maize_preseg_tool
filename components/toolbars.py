@@ -251,6 +251,8 @@ class Toolbars:
         parent.combo_preannotation_reason.addItem("背景误判", "background_false_positive")
         parent.combo_preannotation_reason.addItem("错误碎片", "wrong_fragment")
         parent.combo_preannotation_reason.addItem("穗茎分割", "ear_stem_segmentation")
+        parent.combo_preannotation_reason.addItem("本实例不关注的叶片", "non_target_leaf_in_instance")
+        parent.combo_preannotation_reason.addItem("被本实例遮挡", "occluded_by_this_instance")
         parent.combo_preannotation_reason.currentIndexChanged.connect(parent.on_preannotation_reason_changed)
         controls_layout.addWidget(parent.combo_preannotation_reason, 2, 0, 1, 2)
 

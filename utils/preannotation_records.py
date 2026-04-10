@@ -14,6 +14,8 @@ REASON_CODES = (
     "background_false_positive",
     "wrong_fragment",
     "ear_stem_segmentation",
+    "non_target_leaf_in_instance",
+    "occluded_by_this_instance",
 )
 REASON_CODE_LABELS = {
     "occluded_by_left_plant": "Occluded By Left Plant",
@@ -23,6 +25,8 @@ REASON_CODE_LABELS = {
     "background_false_positive": "Background False Positive",
     "wrong_fragment": "Wrong Fragment",
     "ear_stem_segmentation": "Ear Stem Segmentation",
+    "non_target_leaf_in_instance": "Non Target Leaf In Instance",
+    "occluded_by_this_instance": "Occluded By This Instance",
 }
 VALID_STATUSES = {"accepted", "modified", "ignored", "rejected", "merged"}
 
