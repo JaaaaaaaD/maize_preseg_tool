@@ -16,6 +16,7 @@ REASON_CODES = (
     "ear_stem_segmentation",
     "non_target_leaf_in_instance",
     "occluded_by_this_instance",
+    "boundary_refinement",
 )
 REASON_CODE_LABELS = {
     "occluded_by_left_plant": "Occluded By Left Plant",
@@ -27,6 +28,7 @@ REASON_CODE_LABELS = {
     "ear_stem_segmentation": "Ear Stem Segmentation",
     "non_target_leaf_in_instance": "Non Target Leaf In Instance",
     "occluded_by_this_instance": "Occluded By This Instance",
+    "boundary_refinement": "精修边界",
 }
 VALID_STATUSES = {"accepted", "modified", "ignored", "rejected", "merged"}
 
