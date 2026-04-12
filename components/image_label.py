@@ -642,6 +642,9 @@ class ImageLabel(QLabel):
 
         self.set_merge_staging_mode(False)
         self._notify_annotation_changed()
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "on_entity_geometry_modified"):
+            main_win.on_entity_geometry_modified()
         self.update_display()
         return True, "暂存区域已合并"
 
