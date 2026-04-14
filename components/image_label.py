@@ -422,7 +422,10 @@ class ImageLabel(QLabel):
         normalized = normalize_polygons([merged_polygon])
         if not normalized:
             return None, "合并后未形成有效区域"
-        return normalized[0], None
+        merged_polygon = normalized[0]
+        if self._get_polygon_area(merged_polygon) > 0:
+            merged_polygon = merged_polygon[::-1]
+        return merged_polygon, None
 
     def _handle_merge_staging_click(self, image_pos):
         staging_areas = list(self._iter_active_fine_tune_staging_areas())
