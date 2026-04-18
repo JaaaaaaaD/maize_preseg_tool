@@ -283,6 +283,10 @@ class MainWindowBase(QMainWindow):
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_MERGE_STAGING)
             if getattr(self.left_label, "delete_vertex_mode", False):
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_DELETE_VERTEX)
+            if getattr(self.left_label, "brush_delete_mode", False):
+                return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_DELETE_VERTEX)
+            if getattr(self.left_label, "brush_vertex_mode", False):
+                return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_ADD_VERTEX)
             if self.left_label.add_vertex_mode:
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_ADD_VERTEX)
             return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE)
@@ -424,6 +428,10 @@ class MainWindowBase(QMainWindow):
             )
         if hasattr(self, "btn_delete_vertex"):
             self.btn_delete_vertex.setText("删除顶点")
+        if hasattr(self, "btn_brush_vertex"):
+            self.btn_brush_vertex.setText("画笔建区域")
+        if hasattr(self, "btn_brush_delete"):
+            self.btn_brush_delete.setText("画笔删暂存")
         if hasattr(self, "btn_load_batch"):
             self.btn_load_batch.setText(f"批量加载图片 ({SHORTCUTS['LOAD_BATCH']})")
         if hasattr(self, "btn_load_folder"):

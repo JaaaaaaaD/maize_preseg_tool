@@ -166,6 +166,16 @@ class Toolbars:
         parent.btn_delete_vertex.setEnabled(False)
         plant_layout.addWidget(parent.btn_delete_vertex)
 
+        parent.btn_brush_vertex = QPushButton("画笔建区域")
+        parent.btn_brush_vertex.clicked.connect(parent.toggle_brush_vertex_mode)
+        parent.btn_brush_vertex.setEnabled(True)
+        plant_layout.addWidget(parent.btn_brush_vertex)
+
+        parent.btn_brush_delete = QPushButton("画笔删暂存")
+        parent.btn_brush_delete.clicked.connect(parent.toggle_brush_delete_mode)
+        parent.btn_brush_delete.setEnabled(True)
+        plant_layout.addWidget(parent.btn_brush_delete)
+
         parent.btn_apply_staging_label = QPushButton("修改选中暂存区域标签")
         parent.btn_apply_staging_label.clicked.connect(parent.apply_selected_staging_label)
         parent.btn_apply_staging_label.setEnabled(False)

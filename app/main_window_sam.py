@@ -876,6 +876,10 @@ class MainWindowSamMixin:
         self.btn_add_vertex.setEnabled(True)
         if hasattr(self, "btn_delete_vertex"):
             self.btn_delete_vertex.setEnabled(True)
+        if hasattr(self, "btn_brush_vertex"):
+            self.btn_brush_vertex.setEnabled(True)
+        if hasattr(self, "btn_brush_delete"):
+            self.btn_brush_delete.setEnabled(True)
         self.left_label.removing_region = False
         if hasattr(self, "sync_interaction_state"):
             self.sync_interaction_state()
