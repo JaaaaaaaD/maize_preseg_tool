@@ -547,6 +547,9 @@ class ImageLabel(QLabel):
         )
         if merged_polygon is None:
             return False, error_message or "暂存区域合并失败"
+        # 合并目标是外轮廓区域，统一使用逆时针（负面积）方向，避免被识别成去除区域。
+        if self._get_polygon_area(merged_polygon) > 0:
+            merged_polygon = merged_polygon[::-1]
 
         if first_staging["owner_kind"] == "preview":
             old_polygons = copy.deepcopy(self.current_plant_polygons)
@@ -723,6 +726,37 @@ class ImageLabel(QLabel):
             if int(plant.get("id", 0)) == int(plant_id):
                 return plant
         return None
+
+    def _try_fine_tune_add_vertex_on_nearest_edge(self, image_pos):
+        """在微调实例上，于距离点击处最近的边上插入顶点。成功则返回 True。"""
+        entity = self._find_plant_by_id(self.fine_tune_instance_id)
+        if not entity:
+            return False
+        min_distance = float("inf")
+        closest_edge = None
+        polygons = entity.get("polygons", [])
+        for polygon_index, polygon in enumerate(polygons):
+            point_count = len(polygon)
+            if point_count < 3:
+                continue
+            limit = point_count if polygon[0] != polygon[-1] else point_count - 1
+            for i in range(limit):
+                p1 = polygon[i]
+                p2 = polygon[(i + 1) % point_count]
+                distance = self._point_to_line_distance(image_pos, p1, p2)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_edge = {
+                        "entity": entity,
+                        "polygon_index": polygon_index,
+                        "edge_start": i,
+                        "edge_end": (i + 1) % point_count,
+                        "point": image_pos,
+                    }
+        if closest_edge:
+            self._add_vertex_on_edge(closest_edge)
+            return True
+        return False
 
     def _resolve_staging_entity(self, entity_id=None):
         parsed = self._parse_staging_entity_id(entity_id or self.selected_entity_id)
@@ -2516,52 +2550,17 @@ class ImageLabel(QLabel):
                         self.current_removal_points = [image_pos]
                     self._notify_annotation_changed()
                     return
-                if self.add_vertex_mode:
-                    # 添加顶点模式：在当前微调实例最近的边上加点
-                    entity = None
-                    for plant in self.plants:
-                        if int(plant.get("id", 0)) == int(self.fine_tune_instance_id):
-                            entity = plant
-                            break
-                    if entity:
-                        # 计算所有连线与点击位置的距离
-                        min_distance = float('inf')
-                        closest_edge = None
-
-                        polygons = entity.get("polygons", [])
-
-                        for polygon_index, polygon in enumerate(polygons):
-                            point_count = len(polygon)
-                            if point_count < 3:
-                                continue
-
-                            # 遍历每条边
-                            limit = point_count if polygon[0] != polygon[-1] else point_count - 1
-                            for i in range(limit):
-                                p1 = polygon[i]
-                                p2 = polygon[(i + 1) % point_count]
-
-                                # 计算点到线段的距离
-                                distance = self._point_to_line_distance(image_pos, p1, p2)
-
-                                # 找到距离最近的线段
-                                if distance < min_distance:
-                                    min_distance = distance
-                                    closest_edge = {
-                                        "entity": entity,
-                                        "polygon_index": polygon_index,
-                                        "edge_start": i,
-                                        "edge_end": (i + 1) % point_count,
-                                        "point": image_pos
-                                    }
-
-                        # 如果找到最近的连线
-                        if closest_edge:
-                            # 在连线上创建新顶点
-                            self._add_vertex_on_edge(closest_edge)
+                # Alt+左键：在边上添加顶点（与「添加顶点」按钮模式等价，无需先点按钮）
+                if event.modifiers() & Qt.AltModifier:
+                    self._try_fine_tune_add_vertex_on_nearest_edge(image_pos)
                     return
 
-                delete_vertex_hotkey = bool(event.modifiers() & Qt.AltModifier)
+                # Ctrl+左键：删除顶点（与「删除顶点」按钮模式等价）
+                delete_vertex_hotkey = bool(event.modifiers() & Qt.ControlModifier)
+                if self.add_vertex_mode:
+                    self._try_fine_tune_add_vertex_on_nearest_edge(image_pos)
+                    return
+
                 if self.delete_vertex_mode or delete_vertex_hotkey:
                     vertex_hit = self._find_vertex_hit(image_pos, instance_id=self.fine_tune_instance_id)
                     if vertex_hit:

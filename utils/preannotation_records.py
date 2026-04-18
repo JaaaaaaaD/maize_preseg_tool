@@ -4,7 +4,7 @@ import os
 
 from utils.annotation_schema import clone_polygons, current_timestamp
 
-CORRECTION_RECORD_SCHEMA_VERSION = 6
+CORRECTION_RECORD_SCHEMA_VERSION = 7
 DEFAULT_REGION_LABEL = "stem"
 REASON_CODES = (
     "occluded_by_left_plant",
@@ -119,6 +119,66 @@ def normalize_event_log(entries):
     return events
 
 
+def _reason_segment_merge_key(segment):
+    code = normalize_reason_code(segment.get("reason_code"))
+    return code if code else "__unspecified__"
+
+
+def merge_reason_segments_by_reason_code(segments):
+    """Merge all segments that share the same reason_code into one per reason.
+
+    Order follows first appearance of each reason on the timeline (started_at).
+    This reduces storage when the same reason is used in multiple periods, e.g.
+    wrong_fragment -> background_false_positive -> wrong_fragment becomes two segments.
+    """
+    if not segments:
+        return []
+    if len(segments) == 1:
+        return segments
+
+    timeline = sorted(segments, key=lambda item: item.get("started_at") or "")
+    ordered_keys = []
+    buckets = {}
+    for seg in timeline:
+        key = _reason_segment_merge_key(seg)
+        if key not in buckets:
+            ordered_keys.append(key)
+            buckets[key] = []
+        buckets[key].append(seg)
+
+    merged = []
+    for index, key in enumerate(ordered_keys):
+        group = sorted(buckets[key], key=lambda item: item.get("started_at") or "")
+        combined_events = []
+        for item in group:
+            combined_events.extend(item.get("event_log") or [])
+        combined_events.sort(key=lambda entry: entry.get("timestamp") or "")
+        combined_events = normalize_event_log(combined_events)
+        first = group[0]
+        last = group[-1]
+        reason_out = None if key == "__unspecified__" else key
+        started_at = first.get("started_at") or (combined_events[0]["timestamp"] if combined_events else current_timestamp())
+        updated_at = (
+            last.get("updated_at")
+            or last.get("ended_at")
+            or (combined_events[-1]["timestamp"] if combined_events else current_timestamp())
+        )
+        merged.append(
+            {
+                "segment_id": f"seg_{index + 1:04d}",
+                "reason_code": reason_out,
+                "started_at": started_at,
+                "updated_at": updated_at,
+                "start_polygons": copy.deepcopy(first.get("start_polygons") or []),
+                "start_labels": copy.deepcopy(first.get("start_labels") or []),
+                "end_polygons": copy.deepcopy(last.get("end_polygons") or []),
+                "end_labels": copy.deepcopy(last.get("end_labels") or []),
+                "event_log": combined_events,
+            }
+        )
+    return merged
+
+
 def normalize_reason_segments(segments):
     normalized_segments = []
     for index, segment in enumerate(segments or []):
@@ -152,7 +212,7 @@ def normalize_reason_segments(segments):
                 "event_log": event_log,
             }
         )
-    return normalized_segments
+    return merge_reason_segments_by_reason_code(normalized_segments)
 
 
 def infer_status_from_record(record):
