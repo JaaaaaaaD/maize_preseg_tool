@@ -271,6 +271,48 @@ class Toolbars:
         parent.btn_export_preannotation_records.clicked.connect(parent.export_preannotation_adjustments)
         controls_layout.addWidget(parent.btn_export_preannotation_records, 4, 0, 1, 2)
 
+        parent.btn_import_preannotation_records = QPushButton("导入预标注记录目录")
+        parent.btn_import_preannotation_records.clicked.connect(parent.import_preannotation_adjustments)
+        controls_layout.addWidget(parent.btn_import_preannotation_records, 5, 0, 1, 2)
+
+        controls_layout.addWidget(QLabel("已导入记录"), 6, 0, 1, 2)
+        parent.combo_imported_preannotation_record = NoWheelComboBox()
+        parent.combo_imported_preannotation_record.addItem("当前图片暂无已导入记录", "")
+        parent.combo_imported_preannotation_record.setEnabled(False)
+        parent.combo_imported_preannotation_record.currentIndexChanged.connect(parent.on_imported_preannotation_record_changed)
+        controls_layout.addWidget(parent.combo_imported_preannotation_record, 7, 0, 1, 2)
+
+        parent.btn_apply_imported_preannotation_record = QPushButton("恢复选中记录 final")
+        parent.btn_apply_imported_preannotation_record.clicked.connect(parent.apply_selected_imported_preannotation_record)
+        parent.btn_apply_imported_preannotation_record.setEnabled(False)
+        controls_layout.addWidget(parent.btn_apply_imported_preannotation_record, 8, 0, 1, 2)
+
+        controls_layout.addWidget(QLabel("理由片段"), 9, 0, 1, 2)
+        parent.combo_imported_reason_segment = NoWheelComboBox()
+        parent.combo_imported_reason_segment.addItem("当前记录暂无理由片段", "")
+        parent.combo_imported_reason_segment.setEnabled(False)
+        parent.combo_imported_reason_segment.currentIndexChanged.connect(parent.on_imported_reason_segment_changed)
+        controls_layout.addWidget(parent.combo_imported_reason_segment, 10, 0, 1, 2)
+
+        parent.label_imported_reason_segment_summary = QLabel("理由改动说明: 暂无")
+        parent.label_imported_reason_segment_summary.setWordWrap(True)
+        controls_layout.addWidget(parent.label_imported_reason_segment_summary, 11, 0, 1, 2)
+
+        parent.btn_preview_reason_segment_start = QPushButton("预览理由前状态")
+        parent.btn_preview_reason_segment_start.clicked.connect(parent.preview_selected_reason_segment_start)
+        parent.btn_preview_reason_segment_start.setEnabled(False)
+        controls_layout.addWidget(parent.btn_preview_reason_segment_start, 12, 0)
+
+        parent.btn_preview_reason_segment_end = QPushButton("预览理由后状态")
+        parent.btn_preview_reason_segment_end.clicked.connect(parent.preview_selected_reason_segment_end)
+        parent.btn_preview_reason_segment_end.setEnabled(False)
+        controls_layout.addWidget(parent.btn_preview_reason_segment_end, 12, 1)
+
+        parent.btn_clear_reason_segment_preview = QPushButton("清除理由预览")
+        parent.btn_clear_reason_segment_preview.clicked.connect(parent.clear_imported_reason_segment_preview)
+        parent.btn_clear_reason_segment_preview.setEnabled(False)
+        controls_layout.addWidget(parent.btn_clear_reason_segment_preview, 13, 0, 1, 2)
+
         preannotation_layout.addLayout(controls_layout)
 
         parent.sam_info_text = QTextEdit()

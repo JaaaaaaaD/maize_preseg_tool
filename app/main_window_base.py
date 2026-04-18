@@ -460,6 +460,16 @@ class MainWindowBase(QMainWindow):
             self.btn_ignore_preannotation.setText("忽略当前 proposal")
         if hasattr(self, "btn_export_preannotation_records"):
             self.btn_export_preannotation_records.setText("导出预标注调整记录")
+        if hasattr(self, "btn_import_preannotation_records"):
+            self.btn_import_preannotation_records.setText("导入预标注记录目录")
+        if hasattr(self, "btn_apply_imported_preannotation_record"):
+            self.btn_apply_imported_preannotation_record.setText("恢复选中记录 final")
+        if hasattr(self, "btn_preview_reason_segment_start"):
+            self.btn_preview_reason_segment_start.setText("预览理由前状态")
+        if hasattr(self, "btn_preview_reason_segment_end"):
+            self.btn_preview_reason_segment_end.setText("预览理由后状态")
+        if hasattr(self, "btn_clear_reason_segment_preview"):
+            self.btn_clear_reason_segment_preview.setText("清除理由预览")
         if hasattr(self, "btn_export_weights"):
             self.btn_export_weights.setText("导出当前权重")
         if hasattr(self, "btn_select_weights"):
