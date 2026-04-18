@@ -283,6 +283,10 @@ class MainWindowBase(QMainWindow):
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_MERGE_STAGING)
             if getattr(self.left_label, "delete_vertex_mode", False):
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_DELETE_VERTEX)
+            if getattr(self.left_label, "brush_delete_mode", False):
+                return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_DELETE_VERTEX)
+            if getattr(self.left_label, "brush_vertex_mode", False):
+                return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_ADD_VERTEX)
             if self.left_label.add_vertex_mode:
                 return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE_ADD_VERTEX)
             return self.interaction_state_machine.force(InteractionStateMachine.FINE_TUNE)
@@ -424,6 +428,10 @@ class MainWindowBase(QMainWindow):
             )
         if hasattr(self, "btn_delete_vertex"):
             self.btn_delete_vertex.setText("删除顶点")
+        if hasattr(self, "btn_brush_vertex"):
+            self.btn_brush_vertex.setText("画笔建区域")
+        if hasattr(self, "btn_brush_delete"):
+            self.btn_brush_delete.setText("画笔删暂存")
         if hasattr(self, "btn_load_batch"):
             self.btn_load_batch.setText(f"批量加载图片 ({SHORTCUTS['LOAD_BATCH']})")
         if hasattr(self, "btn_load_folder"):
@@ -460,6 +468,16 @@ class MainWindowBase(QMainWindow):
             self.btn_ignore_preannotation.setText("忽略当前 proposal")
         if hasattr(self, "btn_export_preannotation_records"):
             self.btn_export_preannotation_records.setText("导出预标注调整记录")
+        if hasattr(self, "btn_import_preannotation_records"):
+            self.btn_import_preannotation_records.setText("导入预标注记录目录")
+        if hasattr(self, "btn_apply_imported_preannotation_record"):
+            self.btn_apply_imported_preannotation_record.setText("恢复选中记录 final")
+        if hasattr(self, "btn_preview_reason_segment_start"):
+            self.btn_preview_reason_segment_start.setText("预览理由前状态")
+        if hasattr(self, "btn_preview_reason_segment_end"):
+            self.btn_preview_reason_segment_end.setText("预览理由后状态")
+        if hasattr(self, "btn_clear_reason_segment_preview"):
+            self.btn_clear_reason_segment_preview.setText("清除理由预览")
         if hasattr(self, "btn_export_weights"):
             self.btn_export_weights.setText("导出当前权重")
         if hasattr(self, "btn_select_weights"):

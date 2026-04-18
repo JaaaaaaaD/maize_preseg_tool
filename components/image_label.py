@@ -112,6 +112,15 @@ class ImageLabel(QLabel):
         self.fine_tune_original_data = {}  # 微调前的原始数据
         self.add_vertex_mode = False  # 是否处于添加顶点模式
         self.delete_vertex_mode = False  # 是否处于删除顶点模式
+        self.brush_vertex_mode = False  # 按住左键拖动画线，松开后闭合并新增暂存区域
+        self.brush_vertex_drawing = False
+        self.brush_vertex_points = []  # 图像坐标下的笔迹采样点
+        self.brush_delete_mode = False  # 按住左键拖动闭合圈，删除圈中的暂存区域
+        self.brush_delete_drawing = False
+        self.brush_delete_points = []
+        self._brush_sample_dist = 9.0  # 笔迹采样最小间距（像素，约为当前顶点数的 2/3）
+        self._brush_edge_max_dist = 18.0  # 笔迹点到边的最大距离才插入
+        self._brush_min_insert_dist = 12.0  # 两次插入位置的最小间距，避免重复压栈
         self.split_staging_mode = False
         self.split_line_dragging = False
         self.split_line_start = None
@@ -547,6 +556,9 @@ class ImageLabel(QLabel):
         )
         if merged_polygon is None:
             return False, error_message or "暂存区域合并失败"
+        # 合并目标是外轮廓区域，统一使用逆时针（负面积）方向，避免被识别成去除区域。
+        if self._get_polygon_area(merged_polygon) > 0:
+            merged_polygon = merged_polygon[::-1]
 
         if first_staging["owner_kind"] == "preview":
             old_polygons = copy.deepcopy(self.current_plant_polygons)
@@ -724,6 +736,158 @@ class ImageLabel(QLabel):
                 return plant
         return None
 
+    def _nearest_edge_hit_for_fine_tune(self, image_pos, max_dist=float("inf")):
+        """在微调实例上找距离 image_pos 最近的边；命中后 point 保留原始点击坐标。"""
+        entity = self._find_plant_by_id(self.fine_tune_instance_id)
+        if not entity or not image_pos:
+            return None
+        min_distance = float("inf")
+        closest_edge = None
+        polygons = entity.get("polygons", [])
+        for polygon_index, polygon in enumerate(polygons):
+            point_count = len(polygon)
+            if point_count < 3:
+                continue
+            limit = point_count if polygon[0] != polygon[-1] else point_count - 1
+            for i in range(limit):
+                p1 = polygon[i]
+                p2 = polygon[(i + 1) % point_count]
+                distance = self._point_to_line_distance(image_pos, p1, p2)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_edge = {
+                        "entity": entity,
+                        "polygon_index": polygon_index,
+                        "edge_start": i,
+                        "edge_end": (i + 1) % point_count,
+                        "point": (float(image_pos[0]), float(image_pos[1])),
+                    }
+        if closest_edge is not None and min_distance <= max_dist:
+            return closest_edge
+        return None
+
+    def _nearest_edge_start_in_polygon(self, polygon, image_pos, max_dist=float("inf")):
+        polygon = list(polygon or [])
+        point_count = len(polygon)
+        if point_count < 3:
+            return None
+        limit = point_count if polygon[0] != polygon[-1] else point_count - 1
+        if limit <= 0:
+            return None
+        min_distance = float("inf")
+        edge_start = None
+        for i in range(limit):
+            p1 = polygon[i]
+            p2 = polygon[(i + 1) % point_count]
+            distance = self._point_to_line_distance(image_pos, p1, p2)
+            if distance < min_distance:
+                min_distance = distance
+                edge_start = i
+        if edge_start is None or min_distance > max_dist:
+            return None
+        return edge_start
+
+    def _resolve_active_brush_staging(self):
+        selected_kind, selected = self.get_selected_entity()
+        if selected_kind == "staging" and selected:
+            if self.mode == "fine_tune" or selected.get("owner_kind") == "preview":
+                return selected
+
+        if self.mode == "fine_tune":
+            staging_areas = list(self._iter_active_fine_tune_staging_areas() or [])
+            if len(staging_areas) == 1:
+                return staging_areas[0]
+            return None
+
+        if len(self.current_plant_polygons) == 1:
+            labels = self._ensure_label_slots(self.current_plant_labels, 1)
+            self.current_plant_labels = labels
+            return {
+                "id": self._make_staging_entity_id("preview", None, 0),
+                "owner_kind": "preview",
+                "owner_id": None,
+                "polygon_index": 0,
+                "polygon": self.current_plant_polygons[0],
+                "polygons": [self.current_plant_polygons[0]],
+                "label": self._label_for_index(labels, 0),
+            }
+        return None
+
+    def _replace_staging_with_polygons(self, staging, replacement_polygons, action_name, details=None, preannotation_action=None):
+        """用新多边形列表替换选中的暂存区域（可 0/1/多 个），并记录一次撤销。"""
+        polygon_index = int(staging.get("polygon_index", 0))
+        replacement = normalize_polygons(copy.deepcopy(replacement_polygons or []))
+        replacement_label = staging.get("label", "stem")
+
+        if staging.get("owner_kind") == "preview":
+            old_polygons = copy.deepcopy(self.current_plant_polygons)
+            old_labels = copy.deepcopy(self.current_plant_labels)
+            self.current_plant_polygons = (
+                self.current_plant_polygons[:polygon_index]
+                + replacement
+                + self.current_plant_polygons[polygon_index + 1:]
+            )
+            labels = self._ensure_label_slots(self.current_plant_labels, len(old_polygons))
+            self.current_plant_labels = labels[:polygon_index] + [replacement_label] * len(replacement) + labels[polygon_index + 1:]
+            self._record_preview_state_change(
+                old_polygons,
+                old_labels,
+                action_name,
+                copy.deepcopy(details or {}),
+            )
+            if replacement:
+                self.select_entity("staging", self._make_staging_entity_id("preview", None, polygon_index))
+            else:
+                self.selected_entity_kind = None
+                self.selected_entity_id = None
+        else:
+            plant = staging.get("plant")
+            if not plant:
+                return False
+            old_polygons = copy.deepcopy(plant.get("polygons", []))
+            old_labels = copy.deepcopy(plant.get("labels", []))
+            actual_polygon_index = int(staging.get("actual_polygon_index", polygon_index))
+            polygons = plant.get("polygons", [])
+            plant["polygons"] = polygons[:actual_polygon_index] + replacement + polygons[actual_polygon_index + 1:]
+            if (
+                self.mode == "fine_tune"
+                and int(plant.get("id", 0)) == int(self.fine_tune_instance_id or 0)
+            ) or staging.get("label_storage") == "fine_tune_outer":
+                labels = list(plant.get("labels", []) or [])
+                while len(labels) <= polygon_index:
+                    labels.append("stem")
+            else:
+                labels, _ = self._normalize_labels_for_polygons(plant.get("labels", []), old_polygons)
+            plant["labels"] = labels[:polygon_index] + [replacement_label] * len(replacement) + labels[polygon_index + 1:]
+            touch_instance(plant, "ai_modified" if plant.get("source") in ("ai_accepted", "ai_assisted") else None)
+            self._record_fine_tune_state_change(
+                plant,
+                old_polygons,
+                old_labels,
+                action_name,
+                copy.deepcopy(details or {}),
+            )
+            if preannotation_action:
+                self._notify_preannotation_adjustment(
+                    plant.get("id"),
+                    preannotation_action,
+                    copy.deepcopy(details or {}),
+                )
+            if replacement:
+                self.select_entity("staging", self._make_staging_entity_id("formal", plant.get("id"), polygon_index))
+            else:
+                self.selected_entity_kind = "formal"
+                self.selected_entity_id = str(plant.get("id"))
+        return True
+
+    def _try_fine_tune_add_vertex_on_nearest_edge(self, image_pos):
+        """在微调实例上，于距离点击处最近的边上插入顶点。成功则返回 True。"""
+        hit = self._nearest_edge_hit_for_fine_tune(image_pos, max_dist=float("inf"))
+        if hit:
+            self._add_vertex_on_edge(hit)
+            return True
+        return False
+
     def _resolve_staging_entity(self, entity_id=None):
         parsed = self._parse_staging_entity_id(entity_id or self.selected_entity_id)
         if not parsed:
@@ -773,6 +937,12 @@ class ImageLabel(QLabel):
         self.vertex_drag_info = None  # 拖拽中的顶点信息
         self.add_vertex_mode = False
         self.delete_vertex_mode = False
+        self.brush_vertex_mode = False
+        self.brush_vertex_drawing = False
+        self.brush_vertex_points = []
+        self.brush_delete_mode = False
+        self.brush_delete_drawing = False
+        self.brush_delete_points = []
         self.update_display()
 
         main_win = self.get_main_window()
@@ -785,6 +955,14 @@ class ImageLabel(QLabel):
         """进入添加顶点模式"""
         if self.mode != "fine_tune":
             return
+        if getattr(self, "brush_vertex_mode", False):
+            self.brush_vertex_mode = False
+            self.brush_vertex_drawing = False
+            self.brush_vertex_points = []
+        if getattr(self, "brush_delete_mode", False):
+            self.brush_delete_mode = False
+            self.brush_delete_drawing = False
+            self.brush_delete_points = []
         self.add_vertex_mode = True
         self.set_merge_staging_mode(False)
         main_win = self.get_main_window()
@@ -804,6 +982,14 @@ class ImageLabel(QLabel):
         """进入删除顶点模式"""
         if self.mode != "fine_tune":
             return
+        if getattr(self, "brush_vertex_mode", False):
+            self.brush_vertex_mode = False
+            self.brush_vertex_drawing = False
+            self.brush_vertex_points = []
+        if getattr(self, "brush_delete_mode", False):
+            self.brush_delete_mode = False
+            self.brush_delete_drawing = False
+            self.brush_delete_points = []
         self.delete_vertex_mode = True
         self.set_merge_staging_mode(False)
         main_win = self.get_main_window()
@@ -817,6 +1003,199 @@ class ImageLabel(QLabel):
         main_win = self.get_main_window()
         if main_win and hasattr(main_win, "sync_interaction_state"):
             main_win.sync_interaction_state()
+        self.update_display()
+
+    def enter_brush_vertex_mode(self):
+        """进入画笔连续加顶点模式。"""
+        self.brush_vertex_mode = True
+        self.brush_vertex_drawing = False
+        self.brush_vertex_points = []
+        self.brush_delete_mode = False
+        self.brush_delete_drawing = False
+        self.brush_delete_points = []
+        self.set_merge_staging_mode(False)
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def exit_brush_vertex_mode(self):
+        """退出画笔连续加顶点模式。"""
+        self.brush_vertex_mode = False
+        self.brush_vertex_drawing = False
+        self.brush_vertex_points = []
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def enter_brush_delete_mode(self):
+        """进入画笔删除暂存区域模式（闭合圈删除圈内部分）。"""
+        self.brush_delete_mode = True
+        self.brush_delete_drawing = False
+        self.brush_delete_points = []
+        self.brush_vertex_mode = False
+        self.brush_vertex_drawing = False
+        self.brush_vertex_points = []
+        self.set_merge_staging_mode(False)
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def exit_brush_delete_mode(self):
+        self.brush_delete_mode = False
+        self.brush_delete_drawing = False
+        self.brush_delete_points = []
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "sync_interaction_state"):
+            main_win.sync_interaction_state()
+        self.update_display()
+
+    def _finalize_brush_vertex_stroke(self):
+        """松开后将笔迹闭合并新增一个暂存区域；整笔记为一次撤销。"""
+        self.brush_vertex_drawing = False
+        stroke = list(self.brush_vertex_points)
+        self.brush_vertex_points = []
+        self.update_display()
+        if len(stroke) < 3:
+            return
+
+        unique_points = []
+        for point in stroke:
+            point_xy = (float(point[0]), float(point[1]))
+            if not unique_points or unique_points[-1] != point_xy:
+                unique_points.append(point_xy)
+        if len(unique_points) < 3:
+            return
+        if unique_points[0] != unique_points[-1]:
+            unique_points.append(unique_points[0])
+        if abs(calculate_polygon_area(unique_points)) < 6:
+            return
+
+        normalized_new = normalize_polygons([unique_points])
+        if not normalized_new:
+            return
+        new_polygon = normalized_new[0]
+        new_label = "stem"
+        main_win = self.get_main_window()
+        if main_win and hasattr(main_win, "combo_label"):
+            label_text = (main_win.combo_label.currentText() or "").strip()
+            if label_text:
+                new_label = label_text
+
+        if self.mode == "fine_tune" and self.fine_tune_instance_id:
+            plant = self._find_plant_by_id(self.fine_tune_instance_id)
+            if not plant:
+                return
+            old_polygons = copy.deepcopy(plant.get("polygons", []))
+            old_labels = copy.deepcopy(plant.get("labels", []))
+            plant["polygons"] = normalize_polygons(old_polygons + [copy.deepcopy(new_polygon)])
+            labels = list(old_labels)
+            labels.append(new_label)
+            plant["labels"] = labels
+            if plant.get("source") in ("ai_accepted", "ai_assisted"):
+                plant["source"] = "ai_modified"
+            touch_instance(plant)
+            self._record_fine_tune_state_change(
+                plant,
+                old_polygons,
+                old_labels,
+                "brush_create_polygon",
+                {"stroke_points": len(unique_points), "label": new_label},
+            )
+            self._notify_preannotation_adjustment(
+                plant.get("id"),
+                "brush_create_polygon",
+                {"stroke_points": len(unique_points), "label": new_label},
+            )
+            new_label_index = max(0, len(plant.get("labels", [])) - 1)
+            self.select_entity("staging", self._make_staging_entity_id("formal", plant.get("id"), new_label_index))
+        else:
+            old_polygons = copy.deepcopy(self.current_plant_polygons)
+            old_labels = copy.deepcopy(self.current_plant_labels)
+            self.current_plant_polygons = normalize_polygons(old_polygons + [copy.deepcopy(new_polygon)])
+            self.current_plant_labels = list(old_labels) + [new_label]
+            self._record_preview_state_change(
+                old_polygons,
+                old_labels,
+                "brush_create_polygon",
+                {"stroke_points": len(unique_points), "label": new_label},
+            )
+            new_index = max(0, len(self.current_plant_polygons) - 1)
+            self.select_entity("staging", self._make_staging_entity_id("preview", None, new_index))
+
+        self.set_split_staging_mode(False)
+        self.set_merge_staging_mode(False)
+        self._notify_annotation_changed()
+        self.update_display()
+
+    def _finalize_brush_delete_stroke(self):
+        """松开后将闭合圈内的暂存区域从选中暂存区中扣除；整笔记为一次撤销。"""
+        self.brush_delete_drawing = False
+        staging = self._resolve_active_brush_staging()
+        stroke = list(self.brush_delete_points)
+        self.brush_delete_points = []
+        self.update_display()
+        if not staging or len(stroke) < 3:
+            return
+
+        unique_points = []
+        for point in stroke:
+            if not unique_points or unique_points[-1] != point:
+                unique_points.append(point)
+        if len(unique_points) < 3:
+            return
+        if unique_points[0] != unique_points[-1]:
+            unique_points.append(unique_points[0])
+        if abs(calculate_polygon_area(unique_points)) < 6:
+            return
+
+        source_polygon = copy.deepcopy(staging.get("polygon", []))
+        if len(source_polygon) < 3:
+            return
+        x_coords = [p[0] for p in source_polygon] + [p[0] for p in unique_points]
+        y_coords = [p[1] for p in source_polygon] + [p[1] for p in unique_points]
+        padding = 8
+        min_x = math.floor(min(x_coords)) - padding
+        min_y = math.floor(min(y_coords)) - padding
+        max_x = math.ceil(max(x_coords)) + padding
+        max_y = math.ceil(max(y_coords)) + padding
+        width = max(2, int(max_x - min_x + 1))
+        height = max(2, int(max_y - min_y + 1))
+        source_mask = np.zeros((height, width), dtype=np.uint8)
+        erase_mask = np.zeros((height, width), dtype=np.uint8)
+        source_local = np.array(
+            [[int(round(point[0] - min_x)), int(round(point[1] - min_y))] for point in source_polygon],
+            dtype=np.int32,
+        )
+        erase_local = np.array(
+            [[int(round(point[0] - min_x)), int(round(point[1] - min_y))] for point in unique_points],
+            dtype=np.int32,
+        )
+        cv2.fillPoly(source_mask, [source_local], 255)
+        cv2.fillPoly(erase_mask, [erase_local], 255)
+        remaining_mask = cv2.bitwise_and(source_mask, cv2.bitwise_not(erase_mask))
+        remaining_polygons = self._extract_single_polygon_from_mask(remaining_mask, min_x, min_y)
+        remaining_polygons = [poly for poly in remaining_polygons if abs(calculate_polygon_area(poly)) >= 6]
+
+        details = {
+            "polygon_index": int(staging.get("polygon_index", 0)),
+            "stroke_points": len(unique_points),
+            "remaining_count": len(remaining_polygons),
+        }
+        if not self._replace_staging_with_polygons(
+            staging,
+            remaining_polygons,
+            "brush_delete_staging",
+            details=details,
+            preannotation_action="brush_delete_staging",
+        ):
+            return
+
+        self.set_split_staging_mode(False)
+        self.set_merge_staging_mode(False)
+        self._notify_annotation_changed()
         self.update_display()
 
     def exit_fine_tune_mode(self, save_changes=False):
@@ -864,6 +1243,12 @@ class ImageLabel(QLabel):
         self.fine_tune_original_data = {}
         self.add_vertex_mode = False
         self.delete_vertex_mode = False
+        self.brush_vertex_mode = False
+        self.brush_vertex_drawing = False
+        self.brush_vertex_points = []
+        self.brush_delete_mode = False
+        self.brush_delete_drawing = False
+        self.brush_delete_points = []
         self.set_merge_staging_mode(False)
         self.current_points = []
         self.current_ignored_points = []
@@ -915,6 +1300,12 @@ class ImageLabel(QLabel):
             self.set_merge_staging_mode(False)
             self.set_split_staging_mode(False)
             self.clear_preannotation_box()
+            self.brush_vertex_mode = False
+            self.brush_vertex_drawing = False
+            self.brush_vertex_points = []
+            self.brush_delete_mode = False
+            self.brush_delete_drawing = False
+            self.brush_delete_points = []
 
             self.view_center_x = pil_image.width / 2.0
             self.view_center_y = pil_image.height / 2.0
@@ -2516,52 +2907,31 @@ class ImageLabel(QLabel):
                         self.current_removal_points = [image_pos]
                     self._notify_annotation_changed()
                     return
-                if self.add_vertex_mode:
-                    # 添加顶点模式：在当前微调实例最近的边上加点
-                    entity = None
-                    for plant in self.plants:
-                        if int(plant.get("id", 0)) == int(self.fine_tune_instance_id):
-                            entity = plant
-                            break
-                    if entity:
-                        # 计算所有连线与点击位置的距离
-                        min_distance = float('inf')
-                        closest_edge = None
-
-                        polygons = entity.get("polygons", [])
-
-                        for polygon_index, polygon in enumerate(polygons):
-                            point_count = len(polygon)
-                            if point_count < 3:
-                                continue
-
-                            # 遍历每条边
-                            limit = point_count if polygon[0] != polygon[-1] else point_count - 1
-                            for i in range(limit):
-                                p1 = polygon[i]
-                                p2 = polygon[(i + 1) % point_count]
-
-                                # 计算点到线段的距离
-                                distance = self._point_to_line_distance(image_pos, p1, p2)
-
-                                # 找到距离最近的线段
-                                if distance < min_distance:
-                                    min_distance = distance
-                                    closest_edge = {
-                                        "entity": entity,
-                                        "polygon_index": polygon_index,
-                                        "edge_start": i,
-                                        "edge_end": (i + 1) % point_count,
-                                        "point": image_pos
-                                    }
-
-                        # 如果找到最近的连线
-                        if closest_edge:
-                            # 在连线上创建新顶点
-                            self._add_vertex_on_edge(closest_edge)
+                # Alt+左键：在边上添加顶点（与「添加顶点」按钮模式等价，无需先点按钮）
+                if event.modifiers() & Qt.AltModifier:
+                    self._try_fine_tune_add_vertex_on_nearest_edge(image_pos)
                     return
 
-                delete_vertex_hotkey = bool(event.modifiers() & Qt.AltModifier)
+                # Ctrl+左键：删除顶点（与「删除顶点」按钮模式等价）
+                delete_vertex_hotkey = bool(event.modifiers() & Qt.ControlModifier)
+                if self.add_vertex_mode:
+                    self._try_fine_tune_add_vertex_on_nearest_edge(image_pos)
+                    return
+
+                if getattr(self, "brush_vertex_mode", False):
+                    if not (event.modifiers() & (Qt.AltModifier | Qt.ControlModifier)):
+                        self.brush_vertex_drawing = True
+                        self.brush_vertex_points = [image_pos]
+                        self.update_display()
+                        return
+
+                if getattr(self, "brush_delete_mode", False):
+                    if not (event.modifiers() & (Qt.AltModifier | Qt.ControlModifier)) and self._resolve_active_brush_staging():
+                        self.brush_delete_drawing = True
+                        self.brush_delete_points = [image_pos]
+                        self.update_display()
+                        return
+
                 if self.delete_vertex_mode or delete_vertex_hotkey:
                     vertex_hit = self._find_vertex_hit(image_pos, instance_id=self.fine_tune_instance_id)
                     if vertex_hit:
@@ -2630,6 +3000,20 @@ class ImageLabel(QLabel):
                 self._notify_annotation_changed()
                 return
 
+            if getattr(self, "brush_vertex_mode", False):
+                if not (event.modifiers() & (Qt.AltModifier | Qt.ControlModifier)):
+                    self.brush_vertex_drawing = True
+                    self.brush_vertex_points = [image_pos]
+                    self.update_display()
+                    return
+
+            if getattr(self, "brush_delete_mode", False):
+                if not (event.modifiers() & (Qt.AltModifier | Qt.ControlModifier)) and self._resolve_active_brush_staging():
+                    self.brush_delete_drawing = True
+                    self.brush_delete_points = [image_pos]
+                    self.update_display()
+                    return
+
             # 只有在非微调模式下才处理current_points和current_plant_polygons
             if not self._is_fine_tune_interaction_active() and (self.current_points or self.current_plant_polygons):
                 self._append_current_point(image_pos)
@@ -2668,6 +3052,18 @@ class ImageLabel(QLabel):
                     main_win.on_preannotation_box_completed(rect)
             else:
                 self.clear_preannotation_box()
+            return
+        if event.button() == Qt.LeftButton and getattr(self, "brush_vertex_drawing", False):
+            self._finalize_brush_vertex_stroke()
+            main_win = self.get_main_window()
+            if main_win and hasattr(main_win, "update_undo_redo_state"):
+                main_win.update_undo_redo_state()
+            return
+        if event.button() == Qt.LeftButton and getattr(self, "brush_delete_drawing", False):
+            self._finalize_brush_delete_stroke()
+            main_win = self.get_main_window()
+            if main_win and hasattr(main_win, "update_undo_redo_state"):
+                main_win.update_undo_redo_state()
             return
         if event.button() == Qt.LeftButton and self.split_line_dragging:
             if not self._is_fine_tune_interaction_active():
@@ -2812,6 +3208,30 @@ class ImageLabel(QLabel):
                     main_win.sync_summary_view()
             except Exception as error:
                 print(f"mouseMoveEvent drag error: {error}")
+            return
+
+        if getattr(self, "brush_vertex_drawing", False):
+            image_pos = self.screen_to_image(event.pos())
+            if image_pos:
+                if not self.brush_vertex_points:
+                    self.brush_vertex_points = [image_pos]
+                else:
+                    lx, ly = self.brush_vertex_points[-1]
+                    if math.hypot(image_pos[0] - lx, image_pos[1] - ly) >= self._brush_sample_dist:
+                        self.brush_vertex_points.append(image_pos)
+                self.update_display()
+            return
+
+        if getattr(self, "brush_delete_drawing", False):
+            image_pos = self.screen_to_image(event.pos())
+            if image_pos:
+                if not self.brush_delete_points:
+                    self.brush_delete_points = [image_pos]
+                else:
+                    lx, ly = self.brush_delete_points[-1]
+                    if math.hypot(image_pos[0] - lx, image_pos[1] - ly) >= self._brush_sample_dist:
+                        self.brush_delete_points.append(image_pos)
+                self.update_display()
             return
 
         if self.vertex_drag_info:
@@ -3809,6 +4229,28 @@ class ImageLabel(QLabel):
                             img_to_screen(self.merge_staging_clicks[1]["point"]),
                             img_to_screen(self.merge_staging_clicks[3]["point"]),
                         )
+
+            if self.brush_vertex_drawing and len(self.brush_vertex_points) >= 2:
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(40, 200, 255), 2))
+                for i in range(len(self.brush_vertex_points) - 1):
+                    painter.drawLine(
+                        img_to_screen(self.brush_vertex_points[i]),
+                        img_to_screen(self.brush_vertex_points[i + 1]),
+                    )
+
+            if self.brush_delete_drawing and len(self.brush_delete_points) >= 2:
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(255, 80, 80), 2, Qt.DashLine))
+                for i in range(len(self.brush_delete_points) - 1):
+                    painter.drawLine(
+                        img_to_screen(self.brush_delete_points[i]),
+                        img_to_screen(self.brush_delete_points[i + 1]),
+                    )
+                painter.drawLine(
+                    img_to_screen(self.brush_delete_points[-1]),
+                    img_to_screen(self.brush_delete_points[0]),
+                )
 
             painter.end()
             self.setPixmap(final_pixmap)

@@ -1,4 +1,5 @@
 ﻿import copy
+import json
 import os
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 from utils.annotation_schema import compute_annotation_hash, current_timestamp, make_formal_instance
 from utils.helpers import calculate_signed_polygon_area
 from utils.preannotation_records import (
+    REASON_CODE_LABELS,
     append_event,
     append_reasoned_event,
     close_active_reason_segment,
@@ -200,12 +202,200 @@ class MainWindowSamMixin:
             return []
         return copy.deepcopy((self.preannotation_records_by_image or {}).get(target_image, []))
 
+    @staticmethod
+    def _extract_image_name_from_correction_filename(file_name):
+        base_name = Path(file_name or "").name
+        if base_name.lower().endswith(".json"):
+            base_name = base_name[:-5]
+        if base_name.startswith("correction_"):
+            base_name = base_name[len("correction_") :]
+        return base_name
+
+    def _resolve_image_path_by_name(self, image_name):
+        image_name = Path(image_name or "").name
+        if not image_name:
+            return None
+        for image_path in self.image_paths or []:
+            if Path(image_path).name == image_name:
+                return image_path
+        return None
+
+    @staticmethod
+    def _build_preannotation_record_option_text(record):
+        record_id = str(record.get("record_id") or "unknown")
+        status = str(record.get("status") or "unknown")
+        reason_count = len(record.get("reason_codes") or [])
+        return f"{record_id} | {status} | reasons={reason_count}"
+
+    def _refresh_imported_preannotation_record_selector(self):
+        combo = getattr(self, "combo_imported_preannotation_record", None)
+        if combo is None:
+            return
+        current_record_id = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        if not self.current_image_path:
+            combo.addItem("请先加载图片", "")
+            combo.setEnabled(False)
+            combo.blockSignals(False)
+            return
+        if not self.preannotation_adjustment_records:
+            combo.addItem("当前图片暂无已导入记录", "")
+            combo.setEnabled(False)
+            combo.blockSignals(False)
+            return
+        for record in self.preannotation_adjustment_records:
+            combo.addItem(self._build_preannotation_record_option_text(record), record.get("record_id"))
+        combo.setEnabled(True)
+        if current_record_id:
+            self._set_combobox_data(combo, current_record_id, default_index=0)
+        combo.blockSignals(False)
+        self._refresh_imported_reason_segment_selector()
+
+    def _get_selected_imported_preannotation_record(self):
+        combo = getattr(self, "combo_imported_preannotation_record", None)
+        if combo is None:
+            return None
+        record_id = combo.currentData() or None
+        if not record_id:
+            return None
+        return self._find_preannotation_record(record_id)
+
+    @staticmethod
+    def _build_reason_segment_option_text(index, segment):
+        reason_code = str(segment.get("reason_code") or "unspecified")
+        reason_label = REASON_CODE_LABELS.get(reason_code, reason_code)
+        event_count = len(segment.get("event_log") or [])
+        return f"#{index + 1} | {reason_label} | events={event_count}"
+
+    def _refresh_imported_reason_segment_selector(self):
+        combo = getattr(self, "combo_imported_reason_segment", None)
+        if combo is None:
+            return
+        selected_segment_id = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        record = self._get_selected_imported_preannotation_record()
+        reason_segments = list((record or {}).get("reason_segments") or [])
+        if not reason_segments and record:
+            fallback_reason = record.get("active_reason_code")
+            if not fallback_reason:
+                fallback_reason = (record.get("reason_codes") or [None])[0]
+            reason_segments = [
+                {
+                    "segment_id": "record_overall",
+                    "reason_code": fallback_reason,
+                    "start_polygons": copy.deepcopy(record.get("original_polygons") or []),
+                    "start_labels": copy.deepcopy(record.get("original_labels") or []),
+                    "end_polygons": copy.deepcopy(record.get("final_polygons") or []),
+                    "end_labels": copy.deepcopy(record.get("final_labels") or []),
+                    "event_log": copy.deepcopy(record.get("event_log") or []),
+                }
+            ]
+        self._imported_reason_segments_cache = reason_segments
+        if not reason_segments:
+            combo.addItem("当前记录暂无理由片段", "")
+            combo.setEnabled(False)
+            combo.blockSignals(False)
+            self._set_reason_segment_summary_label(None)
+            return
+        for index, segment in enumerate(reason_segments):
+            segment_id = segment.get("segment_id") or f"segment_{index + 1:04d}"
+            combo.addItem(self._build_reason_segment_option_text(index, segment), segment_id)
+        combo.setEnabled(True)
+        if selected_segment_id:
+            self._set_combobox_data(combo, selected_segment_id, default_index=0)
+        combo.blockSignals(False)
+        self._set_reason_segment_summary_label(self._get_selected_reason_segment())
+
+    def _get_selected_reason_segment(self):
+        combo = getattr(self, "combo_imported_reason_segment", None)
+        if combo is None:
+            return None
+        segment_id = combo.currentData() or None
+        for segment in getattr(self, "_imported_reason_segments_cache", []) or []:
+            current_segment_id = segment.get("segment_id")
+            if current_segment_id == segment_id:
+                return segment
+        return None
+
+    @staticmethod
+    def _count_vertices(polygons):
+        total = 0
+        for polygon in polygons or []:
+            total += len(polygon or [])
+        return total
+
+    def _append_reason_segment_summary(self, segment):
+        if not segment:
+            return
+        reason_code = str(segment.get("reason_code") or "unspecified")
+        reason_label = REASON_CODE_LABELS.get(reason_code, reason_code)
+        start_polygons = segment.get("start_polygons") or []
+        end_polygons = segment.get("end_polygons") or []
+        event_count = len(segment.get("event_log") or [])
+        self.sam_info_text.append(
+            "理由片段: "
+            f"{reason_label} | events={event_count} | "
+            f"polygons {len(start_polygons)}->{len(end_polygons)} | "
+            f"vertices {self._count_vertices(start_polygons)}->{self._count_vertices(end_polygons)}"
+        )
+
+    def _set_reason_segment_summary_label(self, segment):
+        label = getattr(self, "label_imported_reason_segment_summary", None)
+        if label is None:
+            return
+        if not segment:
+            label.setText("理由改动说明: 暂无")
+            return
+        reason_code = str(segment.get("reason_code") or "unspecified")
+        reason_label = REASON_CODE_LABELS.get(reason_code, reason_code)
+        start_polygons = segment.get("start_polygons") or []
+        end_polygons = segment.get("end_polygons") or []
+        event_count = len(segment.get("event_log") or [])
+        label.setText(
+            "理由改动说明: "
+            f"{reason_label} | 事件={event_count} | "
+            f"区域 {len(start_polygons)}->{len(end_polygons)} | "
+            f"顶点 {self._count_vertices(start_polygons)}->{self._count_vertices(end_polygons)}"
+        )
+
+    def _show_reason_segment_preview(self, polygons, reason_code, stage_name):
+        existing_candidate = self._get_selected_candidate()
+        if existing_candidate and self.current_preannotation_candidate:
+            QMessageBox.warning(self, "警告", "当前有未处理的预标注候选，请先接受/拒绝后再预览理由片段")
+            return False
+        preview_candidate_id = f"preview_{stage_name}_{current_timestamp().replace(' ', '_').replace(':', '')}"
+        preview_candidate = {
+            "candidate_id": preview_candidate_id,
+            "polygons": copy.deepcopy(polygons or []),
+            "confidence": None,
+            "model_version": f"imported_reason_{stage_name}",
+            "roi_box": [],
+        }
+        self.left_label.candidate_instances = [preview_candidate]
+        self.left_label.select_entity("candidate", preview_candidate_id)
+        self.left_label.update_display()
+        reason_label = REASON_CODE_LABELS.get(reason_code, reason_code or "unspecified")
+        self.sam_info_text.append(
+            f"已预览理由片段({stage_name}): {reason_label}, polygons={len(preview_candidate['polygons'])}"
+        )
+        return True
+
+    def _has_imported_reason_preview(self):
+        if not self.left_label.candidate_instances:
+            return False
+        candidate = self.left_label.candidate_instances[0]
+        model_version = str(candidate.get("model_version") or "")
+        return model_version.startswith("imported_reason_")
+
     def _load_preannotation_adjustment_records(self, image_path=None):
         target_image = image_path or self.current_image_path
         if not target_image:
             self.preannotation_adjustment_records = []
             self.preannotation_record_counter = 1
             self._sync_preannotation_reason_ui()
+            self._refresh_imported_preannotation_record_selector()
             return []
 
         if target_image in self.preannotation_records_by_image:
@@ -220,6 +410,7 @@ class MainWindowSamMixin:
 
         self.preannotation_record_counter = next_record_counter(self.preannotation_adjustment_records, default_value=1)
         self._sync_preannotation_reason_ui()
+        self._refresh_imported_preannotation_record_selector()
         return self.preannotation_adjustment_records
 
     def _save_preannotation_adjustment_records(self, image_path=None):
@@ -317,6 +508,14 @@ class MainWindowSamMixin:
         if not record:
             return
         previous_reason = record.get("active_reason_code")
+        if not reason_code:
+            QMessageBox.warning(self, "警告", "预标注微调阶段必须先选择一个理由")
+            self._updating_preannotation_controls = True
+            try:
+                self._set_combobox_data(self.combo_preannotation_reason, previous_reason, default_index=0)
+            finally:
+                self._updating_preannotation_controls = False
+            return
         if previous_reason != reason_code:
             self._close_reason_segment(record)
         set_active_reason(record, reason_code)
@@ -385,6 +584,16 @@ class MainWindowSamMixin:
             }
         )
         set_active_reason(record, self.preannotation_default_reason_code)
+        if record.get("active_reason_code"):
+            append_event(
+                record,
+                "reason_selected",
+                {
+                    "previous_reason_code": None,
+                    "reason_code": record.get("active_reason_code"),
+                },
+                reason_code=record.get("active_reason_code"),
+            )
         return record
 
     def _remove_preannotation_formal_instance(self, instance_id):
@@ -464,6 +673,20 @@ class MainWindowSamMixin:
         if hasattr(self, "combo_preannotation_reason"):
             self.combo_preannotation_reason.setEnabled(has_image)
         self._sync_preannotation_reason_ui()
+        self._refresh_imported_preannotation_record_selector()
+        has_imported_record = bool(self.preannotation_adjustment_records)
+        if hasattr(self, "btn_import_preannotation_records"):
+            self.btn_import_preannotation_records.setEnabled(bool(self.image_paths))
+        if hasattr(self, "btn_apply_imported_preannotation_record"):
+            self.btn_apply_imported_preannotation_record.setEnabled(has_image and has_imported_record)
+        reason_segment = self._get_selected_reason_segment()
+        has_reason_segment = bool(reason_segment)
+        if hasattr(self, "btn_preview_reason_segment_start"):
+            self.btn_preview_reason_segment_start.setEnabled(has_image and has_reason_segment)
+        if hasattr(self, "btn_preview_reason_segment_end"):
+            self.btn_preview_reason_segment_end.setEnabled(has_image and has_reason_segment)
+        if hasattr(self, "btn_clear_reason_segment_preview"):
+            self.btn_clear_reason_segment_preview.setEnabled(self._has_imported_reason_preview())
 
     def _clear_preannotation_candidate(self, clear_box=True):
         self.current_preannotation_candidate = None
@@ -621,6 +844,9 @@ class MainWindowSamMixin:
         if not candidate:
             QMessageBox.warning(self, "警告", "请先选择一个预标注候选")
             return
+        if not self._get_current_preannotation_reason_code():
+            QMessageBox.warning(self, "警告", "接受候选前请先在“当前理由”中选择一个理由")
+            return
 
         if hasattr(self, "mark_sam_timing_used"):
             self.mark_sam_timing_used(auto_start=True)
@@ -650,6 +876,10 @@ class MainWindowSamMixin:
         self.btn_add_vertex.setEnabled(True)
         if hasattr(self, "btn_delete_vertex"):
             self.btn_delete_vertex.setEnabled(True)
+        if hasattr(self, "btn_brush_vertex"):
+            self.btn_brush_vertex.setEnabled(True)
+        if hasattr(self, "btn_brush_delete"):
+            self.btn_brush_delete.setEnabled(True)
         self.left_label.removing_region = False
         if hasattr(self, "sync_interaction_state"):
             self.sync_interaction_state()
@@ -739,6 +969,24 @@ class MainWindowSamMixin:
         record = self._find_preannotation_record(record_id)
         if not record:
             return
+        active_reason = record.get("active_reason_code") or self._get_current_preannotation_reason_code()
+        if not active_reason:
+            QMessageBox.warning(self, "警告", "请先选择理由，再进行预标注微调操作")
+            return
+        if record.get("active_reason_code") != active_reason:
+            previous_reason = record.get("active_reason_code")
+            if previous_reason != active_reason:
+                self._close_reason_segment(record)
+            set_active_reason(record, active_reason)
+            append_event(
+                record,
+                "reason_selected",
+                {
+                    "previous_reason_code": previous_reason,
+                    "reason_code": record.get("active_reason_code"),
+                },
+                reason_code=record.get("active_reason_code"),
+            )
         before_state = self._get_record_final_state_snapshot(record)
         after_state = self._get_plant_state_snapshot(plant)
         self._append_reasoned_adjustment(
@@ -770,6 +1018,179 @@ class MainWindowSamMixin:
                 labels=record.get("final_labels", []),
             )
             self._finalize_preannotation_record(record)
+
+    def on_imported_preannotation_record_changed(self, _index):
+        self._refresh_imported_reason_segment_selector()
+        reason_segment = self._get_selected_reason_segment()
+        if reason_segment:
+            self._append_reason_segment_summary(reason_segment)
+            self._set_reason_segment_summary_label(reason_segment)
+            self.preview_selected_reason_segment_end()
+        else:
+            self._set_reason_segment_summary_label(None)
+        self._update_preannotation_controls()
+
+    def on_imported_reason_segment_changed(self, _index):
+        reason_segment = self._get_selected_reason_segment()
+        if reason_segment:
+            self._append_reason_segment_summary(reason_segment)
+            self._set_reason_segment_summary_label(reason_segment)
+            self.preview_selected_reason_segment_end()
+        else:
+            self._set_reason_segment_summary_label(None)
+        self._update_preannotation_controls()
+
+    def preview_selected_reason_segment_start(self):
+        reason_segment = self._get_selected_reason_segment()
+        if not reason_segment:
+            QMessageBox.warning(self, "警告", "请先选择一个理由片段")
+            return
+        self._show_reason_segment_preview(
+            reason_segment.get("start_polygons") or [],
+            reason_segment.get("reason_code"),
+            "before",
+        )
+        self._update_preannotation_controls()
+
+    def preview_selected_reason_segment_end(self):
+        reason_segment = self._get_selected_reason_segment()
+        if not reason_segment:
+            QMessageBox.warning(self, "警告", "请先选择一个理由片段")
+            return
+        self._show_reason_segment_preview(
+            reason_segment.get("end_polygons") or [],
+            reason_segment.get("reason_code"),
+            "after",
+        )
+        self._update_preannotation_controls()
+
+    def clear_imported_reason_segment_preview(self):
+        if not self._has_imported_reason_preview():
+            return
+        self.left_label.candidate_instances = []
+        if self.left_label.selected_entity_kind == "candidate":
+            self.left_label.selected_entity_kind = None
+            self.left_label.selected_entity_id = None
+        self.left_label.update_display()
+        self.sam_info_text.append("已清除理由片段预览")
+        self._update_preannotation_controls()
+
+    def import_preannotation_adjustments(self):
+        directory = QFileDialog.getExistingDirectory(self, "选择预标注记录目录", self.import_path or self.export_path or "")
+        if not directory:
+            return
+        self.import_path = directory
+        imported_files = 0
+        imported_records = 0
+        skipped_files = 0
+        for entry in sorted(os.listdir(directory)):
+            if not entry.startswith("correction_") or not entry.lower().endswith(".json"):
+                continue
+            path = os.path.join(directory, entry)
+            if not os.path.isfile(path):
+                continue
+            fallback_name = self._extract_image_name_from_correction_filename(entry)
+            target_image = self._resolve_image_path_by_name(fallback_name)
+            payload_image_path = None
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                    if isinstance(payload, dict):
+                        payload_image_path = payload.get("image_path")
+            except Exception:
+                payload_image_path = None
+            if not target_image and payload_image_path:
+                target_image = self._resolve_image_path_by_name(payload_image_path)
+            if not target_image:
+                skipped_files += 1
+                continue
+            records = load_records_from_file(path, image_path=target_image)
+            if not records:
+                skipped_files += 1
+                continue
+            cached_records = self.preannotation_records_by_image.get(target_image, [])
+            merged_records = {str(item.get("record_id") or ""): copy.deepcopy(item) for item in cached_records}
+            for record in records:
+                merged_records[str(record.get("record_id") or "")] = copy.deepcopy(record)
+            self.preannotation_records_by_image[target_image] = list(merged_records.values())
+            imported_files += 1
+            imported_records += len(records)
+        if self.current_image_path:
+            self._load_preannotation_adjustment_records(self.current_image_path)
+        self._update_preannotation_controls()
+        QMessageBox.information(
+            self,
+            "导入完成",
+            f"成功导入 {imported_files} 个文件，共 {imported_records} 条记录，跳过 {skipped_files} 个文件",
+        )
+
+    def apply_selected_imported_preannotation_record(self):
+        if not self.current_image_path:
+            QMessageBox.warning(self, "警告", "请先加载图片")
+            return
+        if self._has_imported_reason_preview():
+            self.clear_imported_reason_segment_preview()
+        record = self._get_selected_imported_preannotation_record()
+        if not record:
+            QMessageBox.warning(self, "警告", "请先选择一条已导入记录")
+            return
+        final_state = self._get_record_final_state_snapshot(record)
+        if not final_state["polygons"]:
+            QMessageBox.warning(self, "警告", "该记录没有可恢复的 final 多边形")
+            return
+        record_id = record.get("record_id")
+        formal_instance_id = record.get("formal_instance_id")
+        target_plant = None
+        if formal_instance_id is not None:
+            target_plant = self._find_plant_by_id(formal_instance_id)
+        if not target_plant:
+            for plant in self.left_label.plants:
+                if plant.get("preannotation_record_id") == record_id:
+                    target_plant = plant
+                    break
+        if target_plant:
+            target_plant["polygons"] = copy.deepcopy(final_state["polygons"])
+            target_plant["labels"] = copy.deepcopy(final_state["labels"])
+            target_plant["source"] = "ai_imported"
+            target_plant["origin_model_version"] = record.get("model_type")
+            target_plant["origin_confidence"] = record.get("confidence")
+            target_plant["preannotation_record_id"] = record_id
+            instance_id = int(target_plant.get("id", 0))
+        else:
+            instance_id = None
+            if formal_instance_id is not None and not self._find_plant_by_id(formal_instance_id):
+                instance_id = int(formal_instance_id)
+            if instance_id is None or instance_id <= 0:
+                instance_id = int(self.left_label.current_plant_id)
+            new_instance = make_formal_instance(
+                instance_id=instance_id,
+                polygons=copy.deepcopy(final_state["polygons"]),
+                source="ai_imported",
+                origin_model_version=record.get("model_type"),
+                origin_confidence=record.get("confidence"),
+            )
+            new_instance["labels"] = copy.deepcopy(final_state["labels"])
+            new_instance["preannotation_record_id"] = record_id
+            self.left_label.plants.append(new_instance)
+        self.left_label.current_plant_id = max(int(self.left_label.current_plant_id), int(instance_id) + 1)
+        append_event(
+            record,
+            "imported_correction_applied",
+            {
+                "instance_id": int(instance_id),
+                "image_path": self.current_image_path,
+            },
+            reason_code=record.get("active_reason_code"),
+        )
+        self._persist_preannotation_adjustment_records()
+        self.left_label.select_entity("formal", int(instance_id))
+        self.mark_annotation_changed()
+        self.sync_summary_view()
+        self.update_plant_list()
+        self.update_undo_redo_state()
+        self._update_preannotation_controls()
+        self.sam_info_text.append(f"已恢复导入记录: {record_id} -> instance={instance_id}")
+        QMessageBox.information(self, "恢复完成", f"已将记录 {record_id} 的 final 结果恢复到实例 {instance_id}")
 
     def export_preannotation_adjustments(self):
         directory = QFileDialog.getExistingDirectory(self, "选择导出目录", self.export_path or "")

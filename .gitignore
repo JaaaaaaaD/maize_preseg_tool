@@ -19,6 +19,7 @@ Thumbs.db
 *.pth
 
 # 导出数据
+output/
 coco_ljy/
 coco_dcz/
 coco_lyz/
