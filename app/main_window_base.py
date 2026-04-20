@@ -426,12 +426,16 @@ class MainWindowBase(QMainWindow):
             self.btn_delete_staging_polygon.setText(
                 f"删除选中区域/去除区域 ({SHORTCUTS['DELETE_STAGING_POLYGON']})"
             )
+        if hasattr(self, "btn_add_vertex"):
+            self.btn_add_vertex.setText("添加顶点（Alt+左键）")
         if hasattr(self, "btn_delete_vertex"):
-            self.btn_delete_vertex.setText("删除顶点")
+            self.btn_delete_vertex.setText("删除顶点（Ctrl+左键）")
         if hasattr(self, "btn_brush_vertex"):
             self.btn_brush_vertex.setText("画笔建区域")
         if hasattr(self, "btn_brush_delete"):
             self.btn_brush_delete.setText("画笔删暂存")
+        if hasattr(self, "btn_transparent_overlay"):
+            self.btn_transparent_overlay.setText("区域透明预览")
         if hasattr(self, "btn_load_batch"):
             self.btn_load_batch.setText(f"批量加载图片 ({SHORTCUTS['LOAD_BATCH']})")
         if hasattr(self, "btn_load_folder"):

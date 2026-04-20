@@ -156,12 +156,12 @@ class Toolbars:
         parent.btn_fine_tune.clicked.connect(parent.toggle_fine_tune_mode)
         plant_layout.addWidget(parent.btn_fine_tune)
 
-        parent.btn_add_vertex = QPushButton("添加顶点")
+        parent.btn_add_vertex = QPushButton("添加顶点（Alt+左键）")
         parent.btn_add_vertex.clicked.connect(parent.toggle_add_vertex_mode)
         parent.btn_add_vertex.setEnabled(False)
         plant_layout.addWidget(parent.btn_add_vertex)
 
-        parent.btn_delete_vertex = QPushButton("删除顶点")
+        parent.btn_delete_vertex = QPushButton("删除顶点（Ctrl+左键）")
         parent.btn_delete_vertex.clicked.connect(parent.toggle_delete_vertex_mode)
         parent.btn_delete_vertex.setEnabled(False)
         plant_layout.addWidget(parent.btn_delete_vertex)
@@ -175,6 +175,11 @@ class Toolbars:
         parent.btn_brush_delete.clicked.connect(parent.toggle_brush_delete_mode)
         parent.btn_brush_delete.setEnabled(True)
         plant_layout.addWidget(parent.btn_brush_delete)
+
+        parent.btn_transparent_overlay = QPushButton("区域透明预览")
+        parent.btn_transparent_overlay.clicked.connect(parent.toggle_transparent_overlay_mode)
+        parent.btn_transparent_overlay.setEnabled(True)
+        plant_layout.addWidget(parent.btn_transparent_overlay)
 
         parent.btn_apply_staging_label = QPushButton("修改选中暂存区域标签")
         parent.btn_apply_staging_label.clicked.connect(parent.apply_selected_staging_label)

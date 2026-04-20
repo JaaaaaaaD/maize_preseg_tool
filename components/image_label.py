@@ -112,12 +112,17 @@ class ImageLabel(QLabel):
         self.fine_tune_original_data = {}  # 微调前的原始数据
         self.add_vertex_mode = False  # 是否处于添加顶点模式
         self.delete_vertex_mode = False  # 是否处于删除顶点模式
+        self.delete_vertex_dragging = False
+        self._last_delete_drag_pos = None
+        self.delete_vertex_drag_requires_ctrl = False
+        self._delete_vertex_drag_sample_step = 2.5
         self.brush_vertex_mode = False  # 按住左键拖动画线，松开后闭合并新增暂存区域
         self.brush_vertex_drawing = False
         self.brush_vertex_points = []  # 图像坐标下的笔迹采样点
         self.brush_delete_mode = False  # 按住左键拖动闭合圈，删除圈中的暂存区域
         self.brush_delete_drawing = False
         self.brush_delete_points = []
+        self.transparent_overlay_mode = False  # 临时降低选中/暂存区域填充，方便查看原图细节
         self._brush_sample_dist = 9.0  # 笔迹采样最小间距（像素，约为当前顶点数的 2/3）
         self._brush_edge_max_dist = 18.0  # 笔迹点到边的最大距离才插入
         self._brush_min_insert_dist = 12.0  # 两次插入位置的最小间距，避免重复压栈
@@ -136,6 +141,10 @@ class ImageLabel(QLabel):
     def set_mode(self, mode):
         """设置操作模式"""
         self.mode = mode
+
+    def set_transparent_overlay_mode(self, enabled):
+        self.transparent_overlay_mode = bool(enabled)
+        self.update_display()
 
     def set_preannotation_box_mode(self, enabled):
         """切换预标注框选模式。"""
@@ -888,6 +897,38 @@ class ImageLabel(QLabel):
             return True
         return False
 
+    def _delete_vertex_at_position(self, image_pos):
+        """按当前位置命中并删除一个顶点。"""
+        if not self._is_fine_tune_interaction_active():
+            return False
+        vertex_hit = self._find_vertex_hit(image_pos, instance_id=self.fine_tune_instance_id)
+        if not vertex_hit:
+            return False
+        entity = None
+        for plant in self.plants:
+            if int(plant.get("id", 0)) == int(vertex_hit["entity_id"]):
+                entity = plant
+                break
+        if not entity:
+            return False
+        return bool(self._delete_vertex(entity, vertex_hit["polygon_index"], vertex_hit["point_index"]))
+
+    def _delete_vertices_along_path(self, start_pos, end_pos):
+        """沿鼠标轨迹采样，连续删除命中的顶点。"""
+        if not start_pos or not end_pos:
+            return
+        sx, sy = float(start_pos[0]), float(start_pos[1])
+        ex, ey = float(end_pos[0]), float(end_pos[1])
+        distance = math.hypot(ex - sx, ey - sy)
+        if distance < 1e-6:
+            self._delete_vertex_at_position(end_pos)
+            return
+        steps = max(1, int(distance / max(0.5, self._delete_vertex_drag_sample_step)))
+        for index in range(1, steps + 1):
+            t = index / steps
+            sample_point = (sx + (ex - sx) * t, sy + (ey - sy) * t)
+            self._delete_vertex_at_position(sample_point)
+
     def _resolve_staging_entity(self, entity_id=None):
         parsed = self._parse_staging_entity_id(entity_id or self.selected_entity_id)
         if not parsed:
@@ -991,6 +1032,9 @@ class ImageLabel(QLabel):
             self.brush_delete_drawing = False
             self.brush_delete_points = []
         self.delete_vertex_mode = True
+        self.delete_vertex_dragging = False
+        self._last_delete_drag_pos = None
+        self.delete_vertex_drag_requires_ctrl = False
         self.set_merge_staging_mode(False)
         main_win = self.get_main_window()
         if main_win and hasattr(main_win, "sync_interaction_state"):
@@ -1000,6 +1044,9 @@ class ImageLabel(QLabel):
     def exit_delete_vertex_mode(self):
         """退出删除顶点模式"""
         self.delete_vertex_mode = False
+        self.delete_vertex_dragging = False
+        self._last_delete_drag_pos = None
+        self.delete_vertex_drag_requires_ctrl = False
         main_win = self.get_main_window()
         if main_win and hasattr(main_win, "sync_interaction_state"):
             main_win.sync_interaction_state()
@@ -1243,6 +1290,9 @@ class ImageLabel(QLabel):
         self.fine_tune_original_data = {}
         self.add_vertex_mode = False
         self.delete_vertex_mode = False
+        self.delete_vertex_dragging = False
+        self._last_delete_drag_pos = None
+        self.delete_vertex_drag_requires_ctrl = False
         self.brush_vertex_mode = False
         self.brush_vertex_drawing = False
         self.brush_vertex_points = []
@@ -1293,6 +1343,9 @@ class ImageLabel(QLabel):
             self.selected_plant_id = None
             self.candidate_instances = []
             self.vertex_drag_info = None
+            self.delete_vertex_dragging = False
+            self._last_delete_drag_pos = None
+            self.delete_vertex_drag_requires_ctrl = False
             self.scale_factor = 1.0
             self.current_snap_point = None
             self.is_dragging = False
@@ -2933,15 +2986,10 @@ class ImageLabel(QLabel):
                         return
 
                 if self.delete_vertex_mode or delete_vertex_hotkey:
-                    vertex_hit = self._find_vertex_hit(image_pos, instance_id=self.fine_tune_instance_id)
-                    if vertex_hit:
-                        entity = None
-                        for plant in self.plants:
-                            if int(plant.get("id", 0)) == int(vertex_hit["entity_id"]):
-                                entity = plant
-                                break
-                        if entity:
-                            self._delete_vertex(entity, vertex_hit["polygon_index"], vertex_hit["point_index"])
+                    self._delete_vertex_at_position(image_pos)
+                    self.delete_vertex_dragging = True
+                    self._last_delete_drag_pos = image_pos
+                    self.delete_vertex_drag_requires_ctrl = bool(delete_vertex_hotkey and not self.delete_vertex_mode)
                     return
 
                 # 普通微调模式：
@@ -3052,6 +3100,11 @@ class ImageLabel(QLabel):
                     main_win.on_preannotation_box_completed(rect)
             else:
                 self.clear_preannotation_box()
+            return
+        if event.button() == Qt.LeftButton and self.delete_vertex_dragging:
+            self.delete_vertex_dragging = False
+            self._last_delete_drag_pos = None
+            self.delete_vertex_drag_requires_ctrl = False
             return
         if event.button() == Qt.LeftButton and getattr(self, "brush_vertex_drawing", False):
             self._finalize_brush_vertex_stroke()
@@ -3208,6 +3261,27 @@ class ImageLabel(QLabel):
                     main_win.sync_summary_view()
             except Exception as error:
                 print(f"mouseMoveEvent drag error: {error}")
+            return
+
+        if self.delete_vertex_dragging:
+            if not self._is_fine_tune_interaction_active():
+                self.delete_vertex_dragging = False
+                self._last_delete_drag_pos = None
+                self.delete_vertex_drag_requires_ctrl = False
+                return
+            if self.delete_vertex_drag_requires_ctrl and not (event.modifiers() & Qt.ControlModifier):
+                self.delete_vertex_dragging = False
+                self._last_delete_drag_pos = None
+                self.delete_vertex_drag_requires_ctrl = False
+                return
+            image_pos = self.screen_to_image(event.pos())
+            if image_pos:
+                if self._last_delete_drag_pos is None:
+                    self._delete_vertex_at_position(image_pos)
+                    self._last_delete_drag_pos = image_pos
+                else:
+                    self._delete_vertices_along_path(self._last_delete_drag_pos, image_pos)
+                    self._last_delete_drag_pos = image_pos
             return
 
         if getattr(self, "brush_vertex_drawing", False):
@@ -4282,6 +4356,8 @@ class ImageLabel(QLabel):
                             temp_painter.setPen(QPen(QColor(255, 0, 0), 3) if is_selected else QPen(QColor(0, 0, 0), 1))
                         else:
                             weak_alpha = 70 if is_fine_tune else 55
+                            if self.transparent_overlay_mode and (is_selected or is_fine_tune):
+                                weak_alpha = min(weak_alpha, 10)
                             weak_color = QColor(plant_color.red(), plant_color.green(), plant_color.blue(), weak_alpha)
                             line_color = QColor(255, 140, 0) if (is_selected or is_fine_tune) else QColor(100, 100, 100)
                             temp_painter.setBrush(QBrush(weak_color))
@@ -4315,7 +4391,10 @@ class ImageLabel(QLabel):
                     polygon = area.get("polygon", [])
                     if len(polygon) >= 3:
                         qpts = [img_to_screen(point) for point in polygon]
-                        fill_color = QColor(0, 180, 255, 35 if not show_staging_highlight else 70)
+                        fill_alpha = 35 if not show_staging_highlight else 70
+                        if self.transparent_overlay_mode:
+                            fill_alpha = min(fill_alpha, 10)
+                        fill_color = QColor(0, 180, 255, fill_alpha)
                         line_color = QColor(0, 150, 255) if not show_staging_highlight else QColor(255, 165, 0)
                         painter.setBrush(QBrush(fill_color))
                         painter.setPen(QPen(line_color, 2, Qt.DashLine))
@@ -4388,7 +4467,8 @@ class ImageLabel(QLabel):
             
             # 绘制主多边形（填充区域）
             if self.current_plant_polygons:
-                temp_color = QColor(100, 200, 100, 120)
+                base_alpha = 120 if not self.transparent_overlay_mode else 12
+                temp_color = QColor(100, 200, 100, base_alpha)
                 temp_painter.setBrush(QBrush(temp_color))
                 temp_painter.setPen(QPen(QColor(0, 150, 0), 2))
                 for i, polygon in enumerate(self.current_plant_polygons):
@@ -4400,7 +4480,8 @@ class ImageLabel(QLabel):
                         )
                         show_preview_staging_highlight = is_preview_staging_selected and self._is_fine_tune_interaction_active()
                         if show_preview_staging_highlight:
-                            temp_painter.setBrush(QBrush(QColor(255, 196, 0, 140)))
+                            highlight_alpha = 140 if not self.transparent_overlay_mode else 14
+                            temp_painter.setBrush(QBrush(QColor(255, 196, 0, highlight_alpha)))
                             temp_painter.setPen(QPen(QColor(255, 140, 0), 2, Qt.DashLine))
                         else:
                             temp_painter.setBrush(QBrush(temp_color))

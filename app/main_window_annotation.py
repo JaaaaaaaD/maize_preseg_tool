@@ -9,6 +9,9 @@ from utils.annotation_schema import format_elapsed_seconds
 
 
 class MainWindowAnnotationMixin:
+    ADD_VERTEX_BUTTON_TEXT = "添加顶点（Alt+左键）"
+    DELETE_VERTEX_BUTTON_TEXT = "删除顶点（Ctrl+左键）"
+
     def _sync_brush_vertex_button(self):
         if not hasattr(self, "btn_brush_vertex"):
             return
@@ -34,6 +37,14 @@ class MainWindowAnnotationMixin:
         if getattr(self.left_label, "brush_delete_mode", False):
             self.left_label.exit_brush_delete_mode()
         self._sync_brush_delete_button()
+
+    def _sync_transparent_overlay_button(self):
+        if not hasattr(self, "btn_transparent_overlay"):
+            return
+        if getattr(self.left_label, "transparent_overlay_mode", False):
+            self.btn_transparent_overlay.setText("关闭区域透明预览")
+        else:
+            self.btn_transparent_overlay.setText("区域透明预览")
 
     def _update_staging_controls(self):
         if hasattr(self, "sync_interaction_state"):
@@ -74,8 +85,11 @@ class MainWindowAnnotationMixin:
             self.btn_brush_vertex.setEnabled(brush_enabled)
             self._sync_brush_vertex_button()
         if hasattr(self, "btn_brush_delete"):
-            self.btn_brush_delete.setEnabled(brush_enabled)
+            self.btn_brush_delete.setEnabled(brush_enabled and in_fine_tune)
             self._sync_brush_delete_button()
+        if hasattr(self, "btn_transparent_overlay"):
+            self.btn_transparent_overlay.setEnabled(brush_enabled)
+            self._sync_transparent_overlay_button()
 
     def _can_activate_fine_tune_tool(self, tool_name):
         if self.left_label.mode == "fine_tune":
@@ -242,11 +256,11 @@ class MainWindowAnnotationMixin:
         if self.left_label.add_vertex_mode:
             self.left_label.exit_add_vertex_mode()
             if hasattr(self, "btn_add_vertex"):
-                self.btn_add_vertex.setText("添加顶点")
+                self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
         if getattr(self.left_label, "delete_vertex_mode", False):
             self.left_label.exit_delete_vertex_mode()
             if hasattr(self, "btn_delete_vertex"):
-                self.btn_delete_vertex.setText("删除顶点")
+                self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
         if getattr(self.left_label, "merge_staging_mode", False):
             self.left_label.set_merge_staging_mode(False)
         self._force_exit_brush_vertex_mode()
@@ -271,11 +285,11 @@ class MainWindowAnnotationMixin:
         if self.left_label.add_vertex_mode:
             self.left_label.exit_add_vertex_mode()
             if hasattr(self, "btn_add_vertex"):
-                self.btn_add_vertex.setText("添加顶点")
+                self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
         if getattr(self.left_label, "delete_vertex_mode", False):
             self.left_label.exit_delete_vertex_mode()
             if hasattr(self, "btn_delete_vertex"):
-                self.btn_delete_vertex.setText("删除顶点")
+                self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
         if self.left_label.split_staging_mode:
             self.left_label.set_split_staging_mode(False)
         self._force_exit_brush_vertex_mode()
@@ -403,11 +417,11 @@ class MainWindowAnnotationMixin:
             if self.left_label.mode == "fine_tune" and self.left_label.add_vertex_mode:
                 self.left_label.exit_add_vertex_mode()
                 if hasattr(self, "btn_add_vertex"):
-                    self.btn_add_vertex.setText("添加顶点")
+                    self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
             if self.left_label.mode == "fine_tune" and getattr(self.left_label, "delete_vertex_mode", False):
                 self.left_label.exit_delete_vertex_mode()
                 if hasattr(self, "btn_delete_vertex"):
-                    self.btn_delete_vertex.setText("删除顶点")
+                    self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
             if self.left_label.mode == "fine_tune" and self.left_label.split_staging_mode:
                 self.left_label.set_split_staging_mode(False)
             if self.left_label.mode == "fine_tune" and getattr(self.left_label, "merge_staging_mode", False):
@@ -489,17 +503,17 @@ class MainWindowAnnotationMixin:
             if hasattr(self, "btn_fine_tune"):
                 self.btn_fine_tune.setText("微调模式")
             if hasattr(self, "btn_add_vertex"):
-                self.btn_add_vertex.setText("添加顶点")
+                self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
                 self.btn_add_vertex.setEnabled(False)
             if hasattr(self, "btn_delete_vertex"):
-                self.btn_delete_vertex.setText("删除顶点")
+                self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
                 self.btn_delete_vertex.setEnabled(False)
             if hasattr(self, "btn_brush_vertex"):
                 self.btn_brush_vertex.setText("画笔建区域")
                 self.btn_brush_vertex.setEnabled(True)
             if hasattr(self, "btn_brush_delete"):
                 self.btn_brush_delete.setText("画笔删暂存")
-                self.btn_brush_delete.setEnabled(True)
+                self.btn_brush_delete.setEnabled(False)
             self.left_label.set_split_staging_mode(False)
         else:
             saved_id = self.left_label.confirm_preview_and_save()
@@ -709,7 +723,7 @@ class MainWindowAnnotationMixin:
         """切换添加顶点模式。"""
         if self.left_label.add_vertex_mode:
             self.left_label.exit_add_vertex_mode()
-            self.btn_add_vertex.setText("添加顶点")
+            self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
         else:
             if not self._can_activate_fine_tune_tool("添加顶点"):
                 return
@@ -717,7 +731,7 @@ class MainWindowAnnotationMixin:
             if getattr(self.left_label, "delete_vertex_mode", False):
                 self.left_label.exit_delete_vertex_mode()
                 if hasattr(self, "btn_delete_vertex"):
-                    self.btn_delete_vertex.setText("删除顶点")
+                    self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
             if self.left_label.split_staging_mode:
                 self.left_label.set_split_staging_mode(False)
             if getattr(self.left_label, "merge_staging_mode", False):
@@ -734,7 +748,7 @@ class MainWindowAnnotationMixin:
         """切换删除顶点模式。"""
         if getattr(self.left_label, "delete_vertex_mode", False):
             self.left_label.exit_delete_vertex_mode()
-            self.btn_delete_vertex.setText("删除顶点")
+            self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
         else:
             if not self._can_activate_fine_tune_tool("删除顶点"):
                 return
@@ -742,7 +756,7 @@ class MainWindowAnnotationMixin:
             if self.left_label.add_vertex_mode:
                 self.left_label.exit_add_vertex_mode()
                 if hasattr(self, "btn_add_vertex"):
-                    self.btn_add_vertex.setText("添加顶点")
+                    self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
             if self.left_label.split_staging_mode:
                 self.left_label.set_split_staging_mode(False)
             if getattr(self.left_label, "merge_staging_mode", False):
@@ -768,11 +782,11 @@ class MainWindowAnnotationMixin:
             if self.left_label.add_vertex_mode:
                 self.left_label.exit_add_vertex_mode()
                 if hasattr(self, "btn_add_vertex"):
-                    self.btn_add_vertex.setText("添加顶点")
+                    self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
             if getattr(self.left_label, "delete_vertex_mode", False):
                 self.left_label.exit_delete_vertex_mode()
                 if hasattr(self, "btn_delete_vertex"):
-                    self.btn_delete_vertex.setText("删除顶点")
+                    self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
             if self.left_label.split_staging_mode:
                 self.left_label.set_split_staging_mode(False)
             if getattr(self.left_label, "merge_staging_mode", False):
@@ -796,11 +810,11 @@ class MainWindowAnnotationMixin:
             if self.left_label.add_vertex_mode:
                 self.left_label.exit_add_vertex_mode()
                 if hasattr(self, "btn_add_vertex"):
-                    self.btn_add_vertex.setText("添加顶点")
+                    self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
             if getattr(self.left_label, "delete_vertex_mode", False):
                 self.left_label.exit_delete_vertex_mode()
                 if hasattr(self, "btn_delete_vertex"):
-                    self.btn_delete_vertex.setText("删除顶点")
+                    self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
             if self.left_label.split_staging_mode:
                 self.left_label.set_split_staging_mode(False)
             if getattr(self.left_label, "merge_staging_mode", False):
@@ -809,6 +823,15 @@ class MainWindowAnnotationMixin:
             self.left_label.enter_brush_delete_mode()
             self._sync_brush_delete_button()
         self._update_staging_controls()
+        self.update_status_bar()
+
+    def toggle_transparent_overlay_mode(self):
+        """切换区域透明预览：降低选中/暂存区域填充，便于观察原图纹理。"""
+        new_state = not getattr(self.left_label, "transparent_overlay_mode", False)
+        self.left_label.set_transparent_overlay_mode(new_state)
+        if hasattr(self, "right_label"):
+            self.right_label.set_transparent_overlay_mode(new_state)
+        self._sync_transparent_overlay_button()
         self.update_status_bar()
 
     def toggle_fine_tune_mode(self):
@@ -837,15 +860,15 @@ class MainWindowAnnotationMixin:
                 self.btn_removal_region.setText("去除区域 (R)")
             if hasattr(self, "btn_add_vertex"):
                 self.btn_add_vertex.setEnabled(False)
-                self.btn_add_vertex.setText("添加顶点")
+                self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
             if hasattr(self, "btn_delete_vertex"):
                 self.btn_delete_vertex.setEnabled(False)
-                self.btn_delete_vertex.setText("删除顶点")
+                self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
             if hasattr(self, "btn_brush_vertex"):
                 self.btn_brush_vertex.setEnabled(True)
                 self.btn_brush_vertex.setText("画笔建区域")
             if hasattr(self, "btn_brush_delete"):
-                self.btn_brush_delete.setEnabled(True)
+                self.btn_brush_delete.setEnabled(False)
                 self.btn_brush_delete.setText("画笔删暂存")
         else:
             if not hasattr(self, "combo_plants") or self.combo_plants.currentIndex() == -1:
@@ -873,10 +896,10 @@ class MainWindowAnnotationMixin:
                 self.btn_removal_region.setText("去除区域 (R)")
             if hasattr(self, "btn_add_vertex"):
                 self.btn_add_vertex.setEnabled(True)
-                self.btn_add_vertex.setText("添加顶点")
+                self.btn_add_vertex.setText(self.ADD_VERTEX_BUTTON_TEXT)
             if hasattr(self, "btn_delete_vertex"):
                 self.btn_delete_vertex.setEnabled(True)
-                self.btn_delete_vertex.setText("删除顶点")
+                self.btn_delete_vertex.setText(self.DELETE_VERTEX_BUTTON_TEXT)
             if hasattr(self, "btn_brush_vertex"):
                 self.btn_brush_vertex.setEnabled(True)
                 self.btn_brush_vertex.setText("画笔建区域")
@@ -968,6 +991,9 @@ class MainWindowAnnotationMixin:
 
         if getattr(self.left_label, "brush_delete_mode", False):
             status_parts.append("画笔删暂存模式")
+
+        if getattr(self.left_label, "transparent_overlay_mode", False):
+            status_parts.append("区域透明预览: 开启")
 
         if self.left_label.split_staging_mode:
             status_parts.append("切割暂存区域模式")
