@@ -1,0 +1,9 @@
+{
+  "image_paths": [
+    "D:\\maize_preseg_tool\\images_raw\\image_265_20260328183845.jpg",
+    "D:\\maize_preseg_tool\\images_raw\\image_266_20260328183847.jpg"
+  ],
+  "current_image_index": 0,
+  "import_path": "D:/maize_preseg_tool/images_raw",
+  "saved_at": "2026-04-21 23:01:26"
+}

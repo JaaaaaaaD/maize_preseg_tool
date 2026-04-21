@@ -1,0 +1,13 @@
+{
+  "image_paths": [
+    "D:\\maize_preseg_tool\\images_raw\\image_265_20260328183845.jpg",
+    "D:\\maize_preseg_tool\\images_raw\\image_266_20260328183847.jpg"
+  ],
+  "current_image_index": 0,
+  "import_path": "D:/maize_preseg_tool/images_raw",
+  "save_path": "",
+  "export_path": "",
+  "sam_model_path": "D:/maize_preseg_tool/sam/sam_stem_tassel_best.pth",
+  "sam_model_type": "vit_b",
+  "autosave_root": "D:\\maize_preseg_tool\\project_images_raw_2a2bdba1\\autosave"
+}

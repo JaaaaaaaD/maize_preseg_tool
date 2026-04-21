@@ -12,4 +12,7 @@ class MainWindow(
     MainWindowProjectMixin,
     MainWindowBase,
 ):
-    pass
+    def __init__(self):
+        super().__init__()
+        if hasattr(self, "try_restore_last_session_on_startup"):
+            self.try_restore_last_session_on_startup()

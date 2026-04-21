@@ -1,0 +1,25 @@
+{
+  "project_id": "images_raw_2a2bdba1",
+  "project_name": "images_raw",
+  "source_root": "D:\\maize_preseg_tool\\images_raw",
+  "class_names": [
+    "stem",
+    "leaf",
+    "ear"
+  ],
+  "active_model_version": null,
+  "previous_model_version": null,
+  "last_successful_train_at": null,
+  "completed_image_count": 0,
+  "dirty_completed_image_count": 0,
+  "fixed_val_manifest": null,
+  "bootstrap_done": false,
+  "last_training_status": "idle",
+  "last_training_message": "",
+  "fixed_val_ratio": 0.2,
+  "fixed_val_min_count": 1,
+  "fixed_val_seed": 20260324,
+  "auto_train_threshold": 5,
+  "created_at": "2026-04-21 21:51:43",
+  "updated_at": "2026-04-21 23:00:58"
+}

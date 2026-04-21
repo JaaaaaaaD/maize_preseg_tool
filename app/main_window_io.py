@@ -56,6 +56,10 @@ class MainWindowIOMixin:
             QMessageBox.information(self, "提示", "SAM训练仍在进行中，请等待训练结束后再关闭窗口")
             event.ignore()
             return
+        if hasattr(self, "autosave_timer") and self.autosave_timer.isActive():
+            self.autosave_timer.stop()
+        if hasattr(self, "_flush_autosave"):
+            self._flush_autosave()
         if hasattr(self, "_commit_annotation_timer_segment"):
             self._commit_annotation_timer_segment(reason="window_close")
         if hasattr(self, "annotation_timer"):

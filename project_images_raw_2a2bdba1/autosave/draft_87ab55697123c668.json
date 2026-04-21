@@ -1,0 +1,23 @@
+{
+  "plants": [],
+  "current_plant_id": 1,
+  "ignored_regions": [],
+  "image_state": {
+    "image_path": "D:\\maize_preseg_tool\\images_raw\\image_276_20260328183904.jpg",
+    "annotation_completed": false,
+    "last_modified_at": "2026-04-21 21:54:54",
+    "last_trained_seen_hash": null,
+    "dirty_since_last_train": false,
+    "annotation_timing": {
+      "total_seconds": 0.0,
+      "manual_seconds": 0.0,
+      "sam_seconds": 0.0,
+      "used_sam_preannotation": false,
+      "active_mode": "manual",
+      "sessions": []
+    }
+  },
+  "preannotation_records": [],
+  "image_path": "D:\\maize_preseg_tool\\images_raw\\image_276_20260328183904.jpg",
+  "saved_at": "2026-04-21 21:54:56"
+}

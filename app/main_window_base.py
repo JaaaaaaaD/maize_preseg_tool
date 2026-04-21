@@ -79,6 +79,10 @@ class MainWindowBase(QMainWindow):
         self.annotation_timer.timeout.connect(self.update_timing_panel)
         self._timer_running = False
         self._timer_started_monotonic = None
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.setSingleShot(True)
+        self.autosave_timer.setInterval(1200)
+        self.autosave_timer.timeout.connect(self._on_autosave_timeout)
 
         self.apply_window_theme()
         self.init_ui()
@@ -91,6 +95,10 @@ class MainWindowBase(QMainWindow):
         self._update_preannotation_controls()
 
         self.update_status_bar()
+
+    def _on_autosave_timeout(self):
+        if hasattr(self, "_flush_autosave"):
+            self._flush_autosave()
 
     def _resolve_image_sequence(self, image_path=None):
         target_image = image_path or self.current_image_path
